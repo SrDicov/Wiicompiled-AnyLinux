@@ -312,11 +312,13 @@ done
 # is a plain developer build directory.
 find "$snapshot/workspace/aurora-main/extern" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
 rm -rf "$snapshot/workspace/runtime/build"
-# Size diet (Fase 3): never shipped to users - upstream tests, examples, docs,
-# VCS metadata, and developer build leftovers.
+# Size diet (Fase 3): never shipped to users - aurora's own tests/examples/docs
+# (gated behind BUILD_TESTING OFF, never configured), VCS metadata, and
+# developer build leftovers. NOTE runtime/tests is DELIBERATELY kept (52 KiB):
+# runtime/CMakeLists.txt declares its test executables unconditionally, so
+# pruning it breaks every user-side configure with "Cannot find source file".
 rm -rf "$snapshot/workspace/aurora-main/tests" "$snapshot/workspace/aurora-main/examples" \
     "$snapshot/workspace/aurora-main/docs" "$snapshot/workspace/aurora-main/.git" \
-    "$snapshot/workspace/runtime/tests" \
     "$snapshot/workspace"/runtime/cmake-build-* "$snapshot/workspace"/build* \
     "$snapshot/workspace"/.git
 cp "$workspace/Launcher/local-build.sh" "$snapshot/workspace/Launcher/local-build.sh"
