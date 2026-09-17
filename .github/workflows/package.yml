@@ -88,9 +88,14 @@ jobs:
       # (Launcher/package-game-appimage.sh) with a synthetic binary: proves
       # the whole chain works with zero network (the pre-seeded file://
       # payloads) and yields a bootable game image. Needs no game dump.
+      # Dead proxies (not unshare - userns is denied inside containers) make
+      # ANY network attempt fail fast: curl/wget honor them, file:// ignores
+      # them, so success == hermetic pack.
       - name: Synthetic game-pack test (offline)
         run: |
           set -euo pipefail
+          export http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9
+          export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9
           APPDIR="$GITHUB_WORKSPACE/Launcher/artifacts/appimage-build/AppDir"
           T="$GITHUB_WORKSPACE/synthetic-game-test"
           mkdir -p "$T/src" "$T/data/wii_bootstrap/shared2/wc24" "$T/out"
