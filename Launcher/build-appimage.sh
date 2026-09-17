@@ -38,11 +38,16 @@
 # trees, so this script does both): every bundled ELF goes through
 # quick-sharun exactly once and is NEVER copied by hand; the toolchain's data
 # files (clang resource dir, cmake Modules, libc++ archives), native-prebuilt/
-# and the workspace snapshot are copied verbatim afterwards, and
-# toolchain/bin/* are hardlinks to sharun dispatching by basename to the
-# deployed real binaries in shared/bin/. Resource lookup keeps working
-# because clang/cmake resolve resources relative to the invoked
-# $CACHE/toolchain path (see the hook below).
+# and the workspace snapshot are copied verbatim afterwards.
+#
+# SHARUN DISPATCH RULE (verified): sharun only dispatches binaries invoked
+# exactly one directory below $APPDIR (bin/*, shared/bin/*) - anything deeper
+# (e.g. toolchain/bin/clang) fails with "Interpreter not found!". So
+# toolchain/bin/<tool> are RELATIVE symlinks to ../../bin/<tool> (no mount
+# path baked in), and clang/cmake resolve their resource dirs from the
+# resolved exe path ($APPDIR/bin/<tool>), which is why the physical resource
+# data lives under lib/ and share/ with same-relative symlinks back from
+# toolchain/ (DwarFS dedups identical content, so mirrors cost ~nothing).
 #
 # An AppImage mounts read-only, but local-build.sh writes generated/,
 # native-build/, Assets/, etc. into the workspace it is given. So the
@@ -454,19 +459,37 @@ echo "Installing verbatim data trees..."
 # Templates (found relative to the binary - see hook comment), libc++/abi/
 # unwind archives + shared objects, and the license file.
 mkdir -p "$appdir/toolchain"
-for sub in lib include share; do
+# include/ (libc++ headers), libc++/abi/unwind archives + shared objects and
+# the license stay as real files under toolchain/: nothing executes from
+# there, only future -I/-L use reads them.
+for sub in lib include; do
     if [[ -d "$toolchain_dir/$sub" ]]; then
         cp -a "$toolchain_dir/$sub" "$appdir/toolchain/$sub"
     fi
 done
 cp -a "$toolchain_dir"/LICENSE* "$appdir/toolchain/" 2>/dev/null || true
-# toolchain/bin/* become hardlinks to sharun dispatching by basename to the
-# real deployed binaries in shared/bin/ (registered under every chain name in
-# the previous step). Invoked through the stable $CACHE/toolchain symlink, so
-# clang/cmake keep resolving their ../lib and ../share resource dirs.
+# Physical resource data MUST sit beside the resolved exe dir ($APPDIR/bin):
+# clang's resource dir at lib/clang/<ver>/, cmake's Modules/Templates at
+# share/cmake-<ver>/. Same-relative symlinks keep the toolchain/ view working.
+if [[ -d "$toolchain_dir/lib/clang" ]]; then
+    mkdir -p "$appdir/lib"
+    cp -a "$toolchain_dir/lib/clang" "$appdir/lib/clang"
+    rm -rf "$appdir/toolchain/lib/clang"
+    ln -sfn ../../lib/clang "$appdir/toolchain/lib/clang"
+fi
+if [[ -d "$toolchain_dir/share" ]]; then
+    mkdir -p "$appdir/share"
+    cp -a "$toolchain_dir/share/." "$appdir/share/"
+    rm -rf "$appdir/toolchain/share"
+    ln -sfn ../../share "$appdir/toolchain/share"
+fi
+# toolchain/bin/<tool> are relative symlinks into ../../bin/ (see layout
+# notes above): invoked through the stable $CACHE/toolchain symlink, they
+# resolve to $APPDIR/bin/<tool> - a depth-1 sharun hardlink that dispatches
+# by basename to shared/bin/<tool>, with resources found beside it.
 mkdir -p "$appdir/toolchain/bin"
 for tool in clang clang++ lld ld.lld llvm-ar llvm-ranlib cmake ninja; do
-    ln -f "$appdir/sharun" "$appdir/toolchain/bin/$tool"
+    ln -sfn "../../bin/$tool" "$appdir/toolchain/bin/$tool"
 done
 
 mkdir -p "$appdir/native-prebuilt"
@@ -522,17 +545,25 @@ if [[ "$closure_failed" -ne 0 ]]; then
     exit 1
 fi
 # Gate 2: every wrapped entry point actually starts under the deployed tree.
-# Same loader-error signatures quick-sharun's own --simple-test uses.
+# Same loader-error signatures quick-sharun's own --simple-test uses, plus
+# sharun's own "Interpreter not found!" (wrong invocation depth) and an
+# empty-output tripwire (--version/--help always print; silence means the
+# binary died before main, which the string match alone would miss).
 gate_run() {
     local out
     out=$("$1" "$2" 2>&1) || true
+    echo "  --- $1 $2:" >&2
+    echo "$out" | head -n 3 >&2
     case "$out" in
-        *'error while loading shared libraries'*|*'symbol lookup error'*|*'cannot open shared object file'*)
+        *'error while loading shared libraries'*|*'symbol lookup error'*|*'cannot open shared object file'*|*'Interpreter not found!'*)
             echo "  LOADER FAILURE: $1 $2" >&2
-            echo "$out" >&2
             return 1
             ;;
     esac
+    if [[ -z "$out" ]]; then
+        echo "  EMPTY OUTPUT: $1 $2 printed nothing" >&2
+        return 1
+    fi
     return 0
 }
 gate_failed=0
