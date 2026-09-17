@@ -453,6 +453,16 @@ export DEPLOY_LOCALE=0
 mkdir -p "$OUTPATH"
 bash "$quick_sharun" "${deploy_args[@]}"
 
+# Post-deploy prune: ICU (~38 MiB) always lands in lib/ via strace noise, but
+# PROVABLY nothing needs it - no deployed ELF DT_NEEDEDs it (verified with
+# readelf over bin/, shared/bin/ and lib/; only libicu* reference each
+# other). .NET runs InvariantGlobalization=true (no ICU by design) and every
+# other bundled binary links glibc/libstdc++/libz-style libs only. Gate 2
+# below boots both .NET entry points, so a real dependency would fail loudly
+# here. Revert this block if that ever happens.
+echo "Pruning orphaned ICU libraries..."
+rm -f "$appdir"/lib/libicu*
+
 echo "Installing verbatim data trees..."
 # Toolchain data files quick-sharun never carries (it only deploys ELFs):
 # clang's resource dir (builtin headers, compiler-rt), cmake's Modules +
