@@ -1,0 +1,42 @@
+#!/bin/sh
+# 00-wiicompiled-workspace.hook - sourced by AppRun.sh on every launch, before
+# the main binary runs. Prepares the writable workspace cache that
+# local-build.sh compiles the game in.
+#
+# An AppImage mounts read-only, but local-build.sh writes generated/,
+# native-build/, Assets/, etc. into the workspace it is given, so the bundled
+# workspace snapshot is copied out to a writable cache directory on first run
+# and only ever re-synced when the bundled version changed - generated/,
+# native-build/, Assets/ and PulsarPacks/ live only in that writable cache and
+# are never touched by the sync, so local-build.sh's own incremental caching
+# survives across runs and across AppImage updates. translator/ is not part of
+# this snapshot: it ships as its own self-contained binary (bin/translator-cli)
+# and never needs a writable copy.
+#
+# toolchain/ and native-prebuilt/ are NOT copied into the cache either (large,
+# read-only inputs): $CACHE/toolchain and $CACHE/native-prebuilt are symlinks
+# re-pointed at the current mount on every single launch, unconditionally -
+# the mount path changes every run, and CMake bakes whatever compiler/tool
+# path it is given directly into each build.ninja rule's command line, so a
+# changing path string would force a full rebuild on every launch. The symlink
+# keeps the path string stable while tracking the current mount underneath.
+#
+# POSIX sh only: hooks are sourced by AppRun.sh, do not use bashisms here and
+# do not call `set -u` (AppRun.sh legitimately runs with zero arguments).
+
+WIIC_CACHE="${XDG_DATA_HOME:-$HOME/.local/share}/WiiCompiled/workspace"
+mkdir -p "$WIIC_CACHE"
+if [ ! -f "$WIIC_CACHE/.bundle-version" ] || \
+   [ "$(cat "$APPDIR/workspace/.bundle-version")" != "$(cat "$WIIC_CACHE/.bundle-version")" ]; then
+    mkdir -p "$WIIC_CACHE/Launcher"
+    for _d in runtime aurora-main projects; do
+        rm -rf "$WIIC_CACHE/$_d"
+        cp -r "$APPDIR/workspace/$_d" "$WIIC_CACHE/$_d"
+    done
+    cp "$APPDIR/workspace/Launcher/local-build.sh" "$WIIC_CACHE/Launcher/local-build.sh"
+    cp "$APPDIR/workspace/.bundle-version" "$WIIC_CACHE/.bundle-version"
+fi
+[ -L "$WIIC_CACHE/toolchain" ] || rm -rf "$WIIC_CACHE/toolchain"
+[ -L "$WIIC_CACHE/native-prebuilt" ] || rm -rf "$WIIC_CACHE/native-prebuilt"
+ln -sfn "$APPDIR/toolchain" "$WIIC_CACHE/toolchain"
+ln -sfn "$APPDIR/native-prebuilt" "$WIIC_CACHE/native-prebuilt"
