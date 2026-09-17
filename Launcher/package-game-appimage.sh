@@ -87,6 +87,13 @@ case "$arch" in
     x86_64|aarch64) ;;
     *) echo "package-game-appimage.sh: --arch must be x86_64 or aarch64" >&2; exit 1 ;;
 esac
+# No cross-packaging: quick-sharun resolves everything (including its own
+# download filenames) from the RUNNING kernel/userland, so a mismatched
+# --arch could only produce a franken-image. Fail loudly instead.
+if [[ "$arch" != "$(uname -m)" ]]; then
+    echo "package-game-appimage.sh: error: --arch $arch != host $(uname -m), cross-packaging is not supported" >&2
+    exit 1
+fi
 [[ -f "$game_exe" ]] || { echo "package-game-appimage.sh: game binary missing: $game_exe" >&2; exit 1; }
 [[ -d "$data_dir" ]] || { echo "package-game-appimage.sh: data dir missing: $data_dir" >&2; exit 1; }
 
@@ -180,9 +187,24 @@ export NO_STRIP=1
 export DEPLOY_DATADIR=0
 export DEPLOY_LOCALE=0
 # Offline payloads, pre-seeded by build-appimage.sh (same bytes it verified).
+# They are STAGED (not just referenced) because two of quick-sharun's fetch
+# paths download unconditionally: _get_sharun re-fetches whenever
+# $APPDIR/sharun is absent, and GNU wget - its first download choice when
+# present - cannot speak file:// at all (verified in CI: 5 failed retries).
+# So: the sharun binary is pre-extracted (_get_sharun then returns early),
+# the helper/cross-libc tarballs are copied to quick-sharun's own TMPDIR
+# paths (reused when present), and appimagetool is pointed at directly
+# ([ ! -x ] skips its fetch too). Net: zero downloads, zero network.
+tar -xf "$packaging/sharun+helper-libs-$arch.tar" -C "$appdir" sharun
+chmod +x "$appdir/sharun"
+for payload in "sharun+helper-libs-$arch.tar" "cross-libc-dlopen-$arch.tar"; do
+    cp -f "$packaging/$payload" "${TMPDIR:-/tmp}/$payload"
+done
+cp -f "$packaging/appimagetool" "$work/appimagetool"
+chmod +x "$work/appimagetool"
 export SHARUN_LINK="file://$packaging/sharun+helper-libs-$arch.tar"
 export CROSS_LIBC_DLOPEN_LINK="file://$packaging/cross-libc-dlopen-$arch.tar"
-export APPIMAGETOOL="$packaging/appimagetool"
+export APPIMAGETOOL="$work/appimagetool"
 export SKIP_INTEGRITY_CHECKS=1
 # Paint-by-numbers icon: the game ships no icon asset; reuse the setup one
 # from the running image when present, else a solid placeholder.
