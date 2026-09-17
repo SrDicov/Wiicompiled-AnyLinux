@@ -1,0 +1,115 @@
+name: QA AnyLinux matrix (fork only)
+
+# TEMPORARY fork-only workflow - DO NOT propose upstream. It boots the built
+# setup AppImage in a matrix of foreign userlands (old glibc, musl, NixOS,
+# no-FUSE containers) and asserts the AnyLinux properties:
+#  - starts with zero host dependencies (only the kernel + a POSIX sh)
+#  - uruntime fallback chain works where FUSE is absent (all docker cases)
+# Delete this file before opening the upstream PR.
+#
+# Usage: Actions -> QA AnyLinux matrix -> Run workflow -> pick the
+# "Package installers" run id to test (defaults to the latest successful one
+# on branch anylinux-appimage) and the architecture.
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_run_id:
+        description: "Package installers run id (empty = latest success on anylinux-appimage)"
+        required: false
+        default: ""
+      arch:
+        description: "Architecture to test"
+        required: false
+        default: "x86_64"
+        type: choice
+        options: [x86_64, aarch64]
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve artifact
+    runs-on: ubuntu-22.04
+    outputs:
+      run_id: ${{ steps.pick.outputs.run_id }}
+    steps:
+      - name: Pick the Package installers run
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANT: ${{ inputs.package_run_id }}
+        run: |
+          if [[ -n "$WANT" ]]; then
+            echo "run_id=$WANT" >> "$GITHUB_OUTPUT"
+          else
+            rid=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "Package installers" \
+              --branch anylinux-appimage --status success --limit 1 --json databaseId \
+              --jq '.[0].databaseId')
+            [[ -n "$rid" && "$rid" != "null" ]] || { echo "::error::no successful Package installers run found"; exit 1; }
+            echo "run_id=$rid" >> "$GITHUB_OUTPUT"
+          fi
+
+  probe:
+    name: Probe (${{ matrix.image }})
+    needs: [resolve]
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:14.04
+            arch: x86_64
+          - image: ubuntu:20.04
+            arch: x86_64
+          - image: ubuntu:24.04
+            arch: x86_64
+          - image: fedora:latest
+            arch: x86_64
+          - image: archlinux:latest
+            arch: x86_64
+          - image: alpine:latest
+            arch: x86_64
+          - image: nixos/nix:latest
+            arch: x86_64
+          - image: ubuntu:24.04
+            arch: aarch64
+          - image: alpine:latest
+            arch: aarch64
+    steps:
+      - name: Download the AppImage under test
+        if: matrix.arch == inputs.arch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p qa && cd qa
+          gh run download "${{ needs.resolve.outputs.run_id }}" --repo "$GITHUB_REPOSITORY" \
+            --name "WiiCompiled-Setup-linux-${{ inputs.arch }}" --dir .
+          ls -l
+          chmod +x WiiCompiled-Setup-*.AppImage
+
+      - name: Boot probe (no FUSE, foreign userland)
+        if: matrix.arch == inputs.arch
+        run: |
+          cd qa
+          img=$(echo WiiCompiled-Setup-*.AppImage)
+          echo "=== $img on ${{ matrix.image }} ==="
+          # 1. version probe: exercises apphost start + bundled glibc + bundle extraction
+          docker run --rm -v "$PWD:/w:ro" "${{ matrix.image }}" "/w/$img" --version
+          # 2. state probe: exercises startup + state path with no install present
+          docker run --rm -v "$PWD:/w:ro" "${{ matrix.image }}" "/w/$img" check-products
+          # 3. error-path probe: no ISO, no Assets -> must fail LOUD with the
+          #    known message, never with a loader/linker error
+          set +e
+          out=$(docker run --rm -v "$PWD:/w:ro" "${{ matrix.image }}" "/w/$img" install 2>&1)
+          echo "$out"
+          set -e
+          case "$out" in
+            *'error while loading shared libraries'*|*'symbol lookup error'*|*'cannot open shared object file'*|*'No such file or directory'*)
+              echo "::error::loader/linker failure on ${{ matrix.image }}" ;;
+            *'No --game ISO was given'*)
+              echo "OK: clean application-level error on ${{ matrix.image }}" ;;
+            *)
+              echo "::error::unexpected output on ${{ matrix.image }}" && exit 1 ;;
+          esac

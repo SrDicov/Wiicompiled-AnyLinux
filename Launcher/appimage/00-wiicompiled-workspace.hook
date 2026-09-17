@@ -40,3 +40,10 @@ fi
 [ -L "$WIIC_CACHE/native-prebuilt" ] || rm -rf "$WIIC_CACHE/native-prebuilt"
 ln -sfn "$APPDIR/toolchain" "$WIIC_CACHE/toolchain"
 ln -sfn "$APPDIR/native-prebuilt" "$WIIC_CACHE/native-prebuilt"
+# AppRun.sh execs bin/$MAIN_BIN with "$@" verbatim (it prepends the target
+# itself after sourcing hooks), so inject the defaults the old hand-written
+# AppRun used to pass explicitly. Prepended, never appended: if the caller
+# passes their own --workspace (plain-checkout use), theirs comes later and
+# wins in Program.cs's flag parsing. Harmless for --version/--help (checked
+# before parsing) and for subcommands that ignore it.
+set -- --workspace "$WIIC_CACHE" "$@"
