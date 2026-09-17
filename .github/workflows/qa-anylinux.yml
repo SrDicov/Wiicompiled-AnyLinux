@@ -32,8 +32,11 @@ on:
     tags:
       - 'qa-matrix-*'
 
+# actions:read is required: probes download artifacts produced by a
+# DIFFERENT (Package installers) run, which contents:read alone forbids.
 permissions:
   contents: read
+  actions: read
 
 jobs:
   resolve:
@@ -61,7 +64,7 @@ jobs:
           fi
 
   probe:
-    name: Probe (${{ matrix.image }})
+    name: Probe (${{ matrix.arch }} / ${{ matrix.image }})
     needs: [resolve]
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
     env:
