@@ -409,7 +409,7 @@ deploy_args+=("${ssl_libs[@]}")
 # without these, minimal musl systems (Alpine/busybox, no bash) cannot build.
 # Probed, not hardcoded: only present tools are passed (quick-sharun aborts on
 # missing paths, so a hard list would break across hosts).
-for tool in bash nproc awk gawk grep sed find sha256sum mkdir rm cp mv cat date cut head tail dirname readlink mktemp chmod sleep uname tr; do
+for tool in bash nproc awk gawk grep sed find sha256sum mkdir rm cp mv cat date cut head tail dirname basename readlink mktemp chmod sleep uname tr; do
     if tool_path=$(command -v "$tool" 2>/dev/null); then
         # resolve chains like awk -> gawk once; quick-sharun handles the rest
         deploy_args+=("$tool_path")

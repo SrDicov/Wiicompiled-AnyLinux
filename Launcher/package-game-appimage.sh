@@ -216,6 +216,8 @@ export SKIP_INTEGRITY_CHECKS=1
 if [[ -f "$setup_appdir/wiicompiled-setup.png" ]]; then
     cp "$setup_appdir/wiicompiled-setup.png" "$ICON"
 else
+    command -v python3 >/dev/null 2>&1 || {
+        echo "package-game-appimage.sh: error: no setup icon and no python3 for the placeholder" >&2; exit 1; }
     python3 - "$ICON" <<'PY'
 import struct, sys, zlib
 path = sys.argv[1]
