@@ -51,9 +51,11 @@ jobs:
           if [[ -n "$WANT" ]]; then
             echo "run_id=$WANT" >> "$GITHUB_OUTPUT"
           else
+            # Green Package runs live on anylinux-* refs (feature branch and
+            # ci-probe tags alike) - match by ref prefix, not exact branch.
             rid=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "Package installers" \
-              --branch anylinux-appimage --status success --limit 1 --json databaseId \
-              --jq '.[0].databaseId')
+              --status success --limit 20 --json databaseId,headBranch \
+              --jq '[.[] | select(.headBranch | startswith("anylinux-"))][0].databaseId')
             [[ -n "$rid" && "$rid" != "null" ]] || { echo "::error::no successful Package installers run found"; exit 1; }
             echo "run_id=$rid" >> "$GITHUB_OUTPUT"
           fi

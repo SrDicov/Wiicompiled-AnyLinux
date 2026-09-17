@@ -22,10 +22,15 @@ concurrency:
 jobs:
   recompilation:
     name: Recompilation test
+    # qa-matrix-* tags exercise already-built artifacts; they must not spend
+    # Windows runners recompiling the world again.
+    if: ${{ !startsWith(github.ref, 'refs/tags/qa-matrix-') }}
     uses: ./.github/workflows/recomp-test.yml
 
   linux-appimage:
     name: Linux (AppImage, ${{ matrix.arch }})
+    # See above: qa-matrix-* tags only run the QA matrix workflow.
+    if: ${{ !startsWith(github.ref, 'refs/tags/qa-matrix-') }}
     strategy:
       fail-fast: false
       matrix:
@@ -99,6 +104,8 @@ jobs:
 
   windows-installer:
     name: Windows (installer exe)
+    # See recompilation job: qa-matrix-* tags only run the QA matrix workflow.
+    if: ${{ !startsWith(github.ref, 'refs/tags/qa-matrix-') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
