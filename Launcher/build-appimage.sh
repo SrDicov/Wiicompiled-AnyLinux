@@ -325,9 +325,9 @@ cp "$workspace/Launcher/local-build.sh" "$snapshot/workspace/Launcher/local-buil
 cp "$workspace/Launcher/package-game-appimage.sh" "$snapshot/workspace/Launcher/package-game-appimage.sh"
 # Static gate: local-build.sh invokes this exact path for --package-appimage.
 # A missing file would only surface on end-user machines (CI never has game
-# assets), so fail the image build itself instead.
-[[ -f "$snapshot/workspace/Launcher/package-game-appimage.sh" ]] || {
-    echo "build-appimage.sh: error: game packager missing from snapshot" >&2; exit 1; }
+# assets), so fail the image build itself instead. Checked again after the
+# AppDir copy below (a snapshot-only check once passed while the AppDir copy
+# was forgotten - same failure, invisible to CI).
 
 # The hook re-syncs runtime/aurora-main/projects/local-build.sh into the writable cache only when
 # this changes, so it must change whenever any of those bundled paths actually did - a bare commit
@@ -569,10 +569,16 @@ for dir in runtime aurora-main projects; do
     cp -r "$snapshot/workspace/$dir" "$appdir/workspace/$dir"
 done
 cp "$snapshot/workspace/Launcher/local-build.sh" "$appdir/workspace/Launcher/local-build.sh"
+cp "$snapshot/workspace/Launcher/package-game-appimage.sh" "$appdir/workspace/Launcher/package-game-appimage.sh"
 cp "$snapshot/workspace/.bundle-version" "$appdir/workspace/.bundle-version"
 
 echo "Installing the workspace-cache hook..."
 cp "$appimage_dir/00-wiicompiled-workspace.hook" "$appdir/bin/00-wiicompiled-workspace.hook"
+
+# Second half of the static gate above: the file must be in the AppDir that
+# actually gets packed, not just in the staging snapshot.
+[[ -f "$appdir/workspace/Launcher/package-game-appimage.sh" ]] || {
+    echo "build-appimage.sh: error: game packager missing from AppDir" >&2; exit 1; }
 
 # Offline game-packaging payloads: quick-sharun just downloaded exactly these
 # files (hash-verified against its own pins) to stage THIS image, so copy the
