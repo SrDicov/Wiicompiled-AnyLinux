@@ -440,6 +440,11 @@ export STRACE_FLAGS="--help"
 export STRACE_TIME=5
 # .NET single-file apphosts + the toolchain must keep their bytes intact.
 export NO_STRIP=1
+# No i18n anywhere in this image (.NET runs invariant globalization, the rest
+# is clang/cmake/ninja + shell tools): skip the locale copy entirely instead
+# of copying + debloating it. glibc gconv data (lib/gconv, a different path)
+# is unaffected and still deploys.
+export DEPLOY_LOCALE=0
 mkdir -p "$OUTPATH"
 bash "$quick_sharun" "${deploy_args[@]}"
 
