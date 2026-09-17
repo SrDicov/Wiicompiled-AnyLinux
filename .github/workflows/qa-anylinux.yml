@@ -58,6 +58,9 @@ jobs:
             # ci-probe tags alike) - but all-skipped runs (e.g. qa-matrix-*
             # tags) are "successful" with zero artifacts, so verify the
             # wanted artifact actually exists on the candidate run.
+            # NOTE: no `--workflow` flag on purpose: this fork's workflow
+            # registry listing is stale (only build.yml), which breaks
+            # gh's workflow-name resolution - filter by run name in jq.
             rid=""
             while IFS= read -r cand; do
               if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$cand/artifacts" \
@@ -65,9 +68,9 @@ jobs:
                 rid=$cand
                 break
               fi
-            done < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow "Package installers" \
-              --status success --limit 20 --json databaseId,headBranch \
-              --jq '[.[] | select(.headBranch | startswith("anylinux-"))][].databaseId')
+            done < <(gh run list --repo "$GITHUB_REPOSITORY" \
+              --status success --limit 30 --json databaseId,name,headBranch \
+              --jq '[.[] | select(.name=="Package installers" and (.headBranch | startswith("anylinux-")))][].databaseId')
             [[ -n "$rid" ]] || { echo "::error::no successful Package installers run found (with artifacts)"; exit 1; }
             echo "run picked: $rid"
             echo "run_id=$rid" >> "$GITHUB_OUTPUT"
