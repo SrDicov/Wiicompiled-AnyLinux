@@ -25,17 +25,23 @@
 # do not call `set -u` (AppRun.sh legitimately runs with zero arguments).
 
 WIIC_CACHE="${XDG_DATA_HOME:-$HOME/.local/share}/WiiCompiled/workspace"
-mkdir -p "$WIIC_CACHE"
+mkdir -p "$WIIC_CACHE" "$WIIC_CACHE/Launcher"
 if [ ! -f "$WIIC_CACHE/.bundle-version" ] || \
    [ "$(cat "$APPDIR/workspace/.bundle-version")" != "$(cat "$WIIC_CACHE/.bundle-version")" ]; then
-    mkdir -p "$WIIC_CACHE/Launcher"
     for _d in runtime aurora-main projects; do
         rm -rf "$WIIC_CACHE/$_d"
         cp -r "$APPDIR/workspace/$_d" "$WIIC_CACHE/$_d"
     done
-    cp "$APPDIR/workspace/Launcher/local-build.sh" "$WIIC_CACHE/Launcher/local-build.sh"
-    cp "$APPDIR/workspace/.bundle-version" "$WIIC_CACHE/.bundle-version"
 fi
+# ALWAYS refreshed (tiny files, milliseconds): this makes script staleness
+# structurally impossible - no version stamp, timestamp quirk, killed sync or
+# disk-full window can ever leave a stale local-build.sh behind, because the
+# stamp and the script travel together on every single launch. The big trees
+# above stay version-gated for speed (rm+cp of ~1 GiB on every launch would
+# be unacceptable). Order matters: script first, stamp last, so any kill
+# heals on the next launch either via mismatch or via this same copy.
+cp "$APPDIR/workspace/Launcher/local-build.sh" "$WIIC_CACHE/Launcher/local-build.sh"
+cp "$APPDIR/workspace/.bundle-version" "$WIIC_CACHE/.bundle-version"
 [ -L "$WIIC_CACHE/toolchain" ] || rm -rf "$WIIC_CACHE/toolchain"
 [ -L "$WIIC_CACHE/native-prebuilt" ] || rm -rf "$WIIC_CACHE/native-prebuilt"
 ln -sfn "$APPDIR/toolchain" "$WIIC_CACHE/toolchain"
@@ -43,10 +49,25 @@ ln -sfn "$APPDIR/native-prebuilt" "$WIIC_CACHE/native-prebuilt"
 # AppRun.sh execs bin/$MAIN_BIN with "$@" verbatim (it prepends the target
 # itself after sourcing hooks), so inject the defaults the old hand-written
 # AppRun used to pass explicitly. Prepended, never appended: if the caller
-# passes their own --workspace (plain-checkout use), theirs comes later and
-# wins in Program.cs's flag parsing. Harmless for --version/--help (checked
-# before parsing) and for subcommands that ignore it.
+# passes their own flags (plain-checkout use), theirs come later and win in
+# Program.cs's flag parsing (last wins). Harmless for --version/--help
+# (checked before parsing) and for subcommands that ignore them.
 set -- --workspace "$WIIC_CACHE" "$@"
+# Full tool set (1:1 with the old AppRun - dropping these silently breaks
+# EVERY real install: local-build.sh would build the translator from source
+# (needs a dotnet SDK) and use HOST clang/cmake/ninja (needs host dev
+# packages) instead of the bundled ones). $APPDIR/bin/* are sharun hardlinks
+# (dispatch-safe); toolchain paths keep the stable $CACHE symlink form that
+# CMake bakes into build.ninja.
+set -- --translator-bin "$APPDIR/bin/translator-cli" \
+       --disc-tool-bin "$APPDIR/bin/nodtool" \
+       --cc "$WIIC_CACHE/toolchain/bin/clang" \
+       --cxx "$WIIC_CACHE/toolchain/bin/clang++" \
+       --fuse-ld lld \
+       --cmake "$WIIC_CACHE/toolchain/bin/cmake" \
+       --ninja "$WIIC_CACHE/toolchain/bin/ninja" \
+       --native-prebuilt-dir "$WIIC_CACHE/native-prebuilt" \
+       "$@"
 # Exported (not just set) so it survives the exec into wiicompiled-setup:
 # Program.cs reads $SETUP_APPDIR to locate the pre-seeded offline
 # game-packaging payloads under $SETUP_APPDIR/packaging/. anylinux.so only
