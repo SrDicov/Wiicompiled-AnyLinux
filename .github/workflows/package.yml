@@ -45,18 +45,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Fix git ownership inside the container
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
       # Arch no longer packages a .NET 8 SDK, and the build needs exactly that
       # (global.json / TargetFramework net8.0), so the SDK comes from
       # Microsoft's install script into /usr/share/dotnet instead of pacman.
+      # NOTE: git must be installed here first - the bare Arch container ships
+      # without it, so even `git config` (safe.directory for the checkout
+      # volume) cannot run before this step.
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm \
             base-devel git curl wget python patchelf file \
             xorg-server-xvfb icu openssl zlib gawk grep sed findutils \
             clang cmake ninja
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
           bash /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet --no-path
           echo "/usr/share/dotnet" >> "$GITHUB_PATH"
