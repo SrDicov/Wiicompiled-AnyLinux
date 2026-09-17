@@ -106,10 +106,12 @@ jobs:
             arch: aarch64
     steps:
       # NOTE: gh run download cannot fetch `archive:false` artifacts (not a
-      # zip) - the download-artifact action with run-id can.
+      # zip). download-artifact@v8 can (same major the release job already
+      # uses for these exact artifacts); v7 retries a raw blob as zip and
+      # dies after 5 attempts (verified).
       - name: Download the AppImage under test
         if: matrix.arch == env.TEST_ARCH
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: WiiCompiled-Setup-${{ env.TEST_ARCH }}.AppImage
           path: qa
