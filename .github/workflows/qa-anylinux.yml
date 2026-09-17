@@ -64,7 +64,7 @@ jobs:
             rid=""
             while IFS= read -r cand; do
               if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$cand/artifacts" \
-                  --jq '.artifacts[].name' 2>/dev/null | grep -qx "WiiCompiled-Setup-linux-${{ inputs.arch != '' && inputs.arch || 'x86_64' }}"; then
+                  --jq '.artifacts[].name' 2>/dev/null | grep -qx "WiiCompiled-Setup-${{ inputs.arch != '' && inputs.arch || 'x86_64' }}.AppImage"; then
                 rid=$cand
                 break
               fi
@@ -112,7 +112,7 @@ jobs:
         run: |
           mkdir -p qa && cd qa
           gh run download "${{ needs.resolve.outputs.run_id }}" --repo "$GITHUB_REPOSITORY" \
-            --name "WiiCompiled-Setup-linux-${{ inputs.arch }}" --dir .
+            --name "WiiCompiled-Setup-${{ env.TEST_ARCH }}.AppImage" --dir .
           ls -l
           chmod +x WiiCompiled-Setup-*.AppImage
 
