@@ -66,6 +66,8 @@ translator_bin_override=""
 fuse_ld_override=""
 native_prebuilt_dir=""
 sysroot=""
+package_appimage=0
+setup_appdir=""
 
 usage() {
     cat <<'EOF'
@@ -90,6 +92,10 @@ Usage: local-build.sh --output-dir DIR [options]
                                    skips compiling aurora-main from source entirely
   --sysroot PATH                   Passed to CMake as -DCMAKE_SYSROOT: where the compiler resolves
                                    standard headers/startup files
+  --package-appimage             Wrap each published product as a portable AnyLinux AppImage
+                                   next to the raw binary (see Launcher/package-game-appimage.sh)
+  --setup-appdir DIR             Running setup image's $APPDIR (provides the pre-seeded
+                                   offline packaging payloads); required with --package-appimage
 EOF
 }
 
@@ -114,6 +120,8 @@ while [[ $# -gt 0 ]]; do
         --translator-bin) translator_bin_override=$2; shift 2 ;;
         --native-prebuilt-dir) native_prebuilt_dir=$2; shift 2 ;;
         --sysroot) sysroot=$2; shift 2 ;;
+        --package-appimage) package_appimage=1; shift ;;
+        --setup-appdir) setup_appdir=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) fail "unknown argument: $1" ;;
     esac
@@ -147,6 +155,9 @@ if [[ "$profile" == "both" && -z "$base_output_dir" ]]; then
 fi
 if [[ "$profile" != "both" && -n "$base_output_dir" ]]; then
     fail "--base-output-dir is valid only with --profile both."
+fi
+if (( package_appimage )) && [[ -z "$setup_appdir" ]]; then
+    fail "--package-appimage requires --setup-appdir (the running setup image's \$APPDIR)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -494,5 +505,32 @@ case "$profile" in
         publish_built_product WiiCompiled "$output_dir" base
         ;;
 esac
+
+# Portable game images, one per published product. Off unless requested, so
+# direct local-build.sh users keep raw-binary behavior; the setup installer
+# passes --package-appimage (unless --no-game-appimage) with its own $APPDIR.
+if (( package_appimage )); then
+    packager=$workspace/Launcher/package-game-appimage.sh
+    [[ -f "$packager" ]] || fail "Game packager is missing: $packager"
+    package_built_product() {
+        local target=$1 destination=$2 provenance_profile=$3
+        log_step package-appimage "Wrapping $target as a portable AppImage"
+        bash "$packager" --game-exe "$destination/$target" --data-dir "$destination" \
+            --setup-appdir "$setup_appdir" \
+            --output "$destination/$target-$(uname -m).AppImage" --profile "$provenance_profile"
+    }
+    case "$profile" in
+        both)
+            package_built_product WiiCompiled "$base_output_dir" base
+            package_built_product RetroRewind "$output_dir" retro-rewind
+            ;;
+        retro-rewind)
+            package_built_product RetroRewind "$output_dir" retro-rewind
+            ;;
+        base)
+            package_built_product WiiCompiled "$output_dir" base
+            ;;
+    esac
+fi
 
 echo "MKWCBUILD:OUTPUT=$output_dir"

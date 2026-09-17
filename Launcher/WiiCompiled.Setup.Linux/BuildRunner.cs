@@ -14,6 +14,7 @@ internal static class BuildRunner
         string? retroDir, string? retroWfcOfflineDir, bool skipRetroWfcPayload,
         bool forceCleanBuild, string? translatorBin, string? ccBin, string? cxxBin, string? fuseLd,
         string? cmakeBin, string? ninjaBin, string? nativePrebuiltDir, string? sysroot,
+        bool packageAppimage, string? setupAppdir,
         IInstallReporter reporter,
         CancellationToken cancellationToken)
     {
@@ -81,6 +82,18 @@ internal static class BuildRunner
         if (!string.IsNullOrEmpty(sysroot))
         {
             startInfo.ArgumentList.Add("--sysroot"); startInfo.ArgumentList.Add(sysroot);
+        }
+        // Game AppImages are wrapped at the end of local-build.sh from the
+        // setup image's own pre-seeded offline payloads (see
+        // Launcher/package-game-appimage.sh). Direct local-build.sh users
+        // simply never pass these flags and keep raw-binary behavior.
+        if (packageAppimage)
+        {
+            startInfo.ArgumentList.Add("--package-appimage");
+            if (!string.IsNullOrEmpty(setupAppdir))
+            {
+                startInfo.ArgumentList.Add("--setup-appdir"); startInfo.ArgumentList.Add(setupAppdir);
+            }
         }
 
         using var process = new Process { StartInfo = startInfo };

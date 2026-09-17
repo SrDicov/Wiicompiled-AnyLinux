@@ -69,6 +69,12 @@
 # path string stable while tracking the current mount underneath.
 set -euo pipefail
 
+# Pinned explicitly (not just defaulted): quick-sharun resolves its own
+# downloads (sharun tarball, appimagetool, cross-libc tarball) under $TMPDIR,
+# and the game-packaging payload seeding below collects them from exactly
+# here. Same directory for both, guaranteed.
+export TMPDIR="${TMPDIR:-/tmp}"
+
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 workspace=$(cd "$script_dir/.." && pwd)
 appimage_dir="$script_dir/appimage"
@@ -156,11 +162,8 @@ fi
 for dep in dotnet git python3 patchelf bash readelf; do
     command -v "$dep" >/dev/null 2>&1 || { echo "build-appimage.sh: error: required tool '$dep' not found on PATH" >&2; exit 1; }
 done
-# Advanced escape hatch: quick-sharun honors $APPIMAGETOOL as the packer
-# binary (default: its own pinned download). Exported only if already set.
-if [[ -n "${APPIMAGETOOL:-}" ]]; then
-    export APPIMAGETOOL
-fi
+# Advanced escape hatch preserved: a pre-set $APPIMAGETOOL is used as-is
+# (and pre-seeded for game packaging); otherwise the pre-fetch above applies.
 if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
     echo "build-appimage.sh: error: need curl or wget on PATH" >&2; exit 1
 fi
@@ -188,6 +191,39 @@ if [[ "$actual_sha" != "$QUICK_SHARUN_SHA256" && -z "$quick_sharun_override" ]];
     exit 1
 fi
 chmod +x "$quick_sharun"
+
+# appimagetool pre-fetch: quick-sharun only downloads its packer during
+# --make-appimage (the LAST step), but the offline game-packaging payloads
+# (copied into the image before packing) need that exact binary earlier.
+# Parsed from the PINNED script (not hardcoded twice): any upstream URL/SHA
+# rotation fails loudly here until the pin is deliberately re-verified.
+if [[ -z "${APPIMAGETOOL:-}" ]]; then
+    echo "Pre-fetching appimagetool (also pre-seeded for offline game packaging)..."
+    _tmpl=$(grep '^APPIMAGETOOL_LINK=' "$quick_sharun" | sed 's/^APPIMAGETOOL_LINK=${APPIMAGETOOL_LINK:-//; s/}$//')
+    [[ -n "$_tmpl" ]] || { echo "build-appimage.sh: error: cannot parse APPIMAGETOOL_LINK from pinned quick-sharun" >&2; exit 1; }
+    _tmpl=${_tmpl//\$APPIMAGE_ARCH/$image_arch}
+    _tmpl=${_tmpl//\$\{APPIMAGE_ARCH\}/$image_arch}
+    _sha=$(awk -v a="$image_arch" '
+        $0 ~ "^\t" a "\)" {f=1}
+        f && /APPIMAGETOOL_SHA=/ {sub(/.*=/, ""); print; exit}
+        /;;/ {f=0}' "$quick_sharun")
+    [[ -n "$_sha" ]] || { echo "build-appimage.sh: error: cannot parse APPIMAGETOOL_SHA for $image_arch" >&2; exit 1; }
+    APPIMAGETOOL="$artifacts/appimagetool-$image_arch"
+    if [[ ! -x "$APPIMAGETOOL" ]] || ! echo "$_sha  $APPIMAGETOOL" | sha256sum -c - >/dev/null 2>&1; then
+        rm -f "$APPIMAGETOOL"
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL "$_tmpl" -o "$APPIMAGETOOL"
+        else
+            wget -qO "$APPIMAGETOOL" "$_tmpl"
+        fi
+        echo "$_sha  $APPIMAGETOOL" | sha256sum -c - || {
+            echo "build-appimage.sh: error: appimagetool sha256 mismatch" >&2; exit 1; }
+    fi
+    chmod +x "$APPIMAGETOOL"
+fi
+# Exported either way: a user-pre-set path must reach quick-sharun children
+# exactly like the pre-fetched default does.
+export APPIMAGETOOL
 
 echo "Publishing the installer (self-contained $dotnet_rid)..."
 publish_tmp="$artifacts/publish"
@@ -392,6 +428,21 @@ for tool in clang clang++ lld ld.lld llvm-ar llvm-ranlib cmake ninja; do
     deploy_args+=("$toolchain_dir/bin/$tool")
 done
 
+# Pack-time tools the GAME packaging step (Launcher/package-game-appimage.sh)
+# needs on end-user machines, where they cannot be assumed: patchelf rewrites
+# interpreters, tar extracts the pre-seeded payloads, strings feeds
+# quick-sharun's dependency scan. Deployed (wrapped) here so they run on any
+# host glibc/musl via the bundled one. Hard requirements, not probes: without
+# them neither this build nor any later game packaging can work.
+for tool in patchelf tar strings; do
+    if tool_path=$(command -v "$tool" 2>/dev/null); then
+        deploy_args+=("$tool_path")
+    else
+        echo "build-appimage.sh: error: required host tool '$tool' not found on PATH" >&2
+        exit 1
+    fi
+done
+
 # Preflight (Fase 0 inventory, automated): every planned ELF must resolve its
 # full closure on THIS host - a missing library here means a missing system
 # package (e.g. libxml2 for clang), and quick-sharun would abort later with a
@@ -514,6 +565,30 @@ cp "$snapshot/workspace/.bundle-version" "$appdir/workspace/.bundle-version"
 
 echo "Installing the workspace-cache hook..."
 cp "$appimage_dir/00-wiicompiled-workspace.hook" "$appdir/bin/00-wiicompiled-workspace.hook"
+
+# Offline game-packaging payloads: quick-sharun just downloaded exactly these
+# files (hash-verified against its own pins) to stage THIS image, so copy the
+# same bytes for the install-time game packaging step
+# (Launcher/package-game-appimage.sh references them via file:// URLs - zero
+# network on end-user machines). APPIMAGETOOL honors a possible override env,
+# so copy whichever binary actually packed this image.
+echo "Seeding offline game-packaging payloads..."
+mkdir -p "$appdir/packaging"
+cp "$quick_sharun" "$appdir/packaging/quick-sharun.sh"
+for payload in "sharun+helper-libs-$image_arch.tar" "cross-libc-dlopen-$image_arch.tar"; do
+    src="$TMPDIR/$payload"
+    if [[ ! -f "$src" ]]; then
+        echo "build-appimage.sh: error: expected quick-sharun download missing: $src" >&2
+        exit 1
+    fi
+    cp "$src" "$appdir/packaging/$payload"
+done
+packer_bin="${APPIMAGETOOL:-$TMPDIR/appimagetool}"
+if [[ ! -x "$packer_bin" ]]; then
+    echo "build-appimage.sh: error: appimagetool binary missing: $packer_bin" >&2
+    exit 1
+fi
+cp "$packer_bin" "$appdir/packaging/appimagetool"
 
 echo "Regenerating sharun lib.path..."
 "$appdir/sharun" -g

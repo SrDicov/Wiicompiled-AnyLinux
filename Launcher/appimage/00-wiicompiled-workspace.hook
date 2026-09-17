@@ -47,3 +47,8 @@ ln -sfn "$APPDIR/native-prebuilt" "$WIIC_CACHE/native-prebuilt"
 # wins in Program.cs's flag parsing. Harmless for --version/--help (checked
 # before parsing) and for subcommands that ignore it.
 set -- --workspace "$WIIC_CACHE" "$@"
+# Exported (not just set) so it survives the exec into wiicompiled-setup:
+# Program.cs reads $SETUP_APPDIR to locate the pre-seeded offline
+# game-packaging payloads under $SETUP_APPDIR/packaging/. anylinux.so only
+# scrubs its known-bad list (GCONV_PATH et al); custom names pass through.
+export SETUP_APPDIR="$APPDIR"

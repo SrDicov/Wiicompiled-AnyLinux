@@ -84,6 +84,43 @@ jobs:
       - name: Build AppImage
         run: bash Launcher/build-appimage.sh
 
+      # Offline end-to-end test of install-time game packaging
+      # (Launcher/package-game-appimage.sh) with a synthetic binary: proves
+      # the whole chain works with zero network (the pre-seeded file://
+      # payloads) and yields a bootable game image. Needs no game dump.
+      - name: Synthetic game-pack test (offline)
+        run: |
+          set -euo pipefail
+          APPDIR="$GITHUB_WORKSPACE/Launcher/artifacts/appimage-build/AppDir"
+          T="$GITHUB_WORKSPACE/synthetic-game-test"
+          mkdir -p "$T/src" "$T/data/wii_bootstrap/shared2/wc24" "$T/out"
+          cat > "$T/src/game.cpp" <<'EOF'
+          #include <cstdio>
+          int main() { std::printf("MKWII-SYNTHETIC-GAME-BOOT-OK\n"); return 0; }
+          EOF
+          "$APPDIR/toolchain/bin/clang++" -O2 "$T/src/game.cpp" -o "$T/src/WiiCompiled"
+          echo fake-dsp > "$T/data/dsp_coef.bin"
+          echo fake-wc24 > "$T/data/wii_bootstrap/shared2/wc24/misc.bin"
+          echo fake-pipe > "$T/data/initial_pipeline_cache.db"
+          if unshare -rn true 2>/dev/null; then
+            echo "Packaging with the network namespace disabled (offline proof)..."
+            unshare -rn bash Launcher/package-game-appimage.sh \
+              --game-exe "$T/src/WiiCompiled" --data-dir "$T/data" \
+              --setup-appdir "$APPDIR" \
+              --output "$T/out/WiiCompiled-${{ matrix.arch }}.AppImage" \
+              --profile base --arch "${{ matrix.arch }}"
+          else
+            echo "WARNING: unshare unavailable, packaging with network up" >&2
+            bash Launcher/package-game-appimage.sh \
+              --game-exe "$T/src/WiiCompiled" --data-dir "$T/data" \
+              --setup-appdir "$APPDIR" \
+              --output "$T/out/WiiCompiled-${{ matrix.arch }}.AppImage" \
+              --profile base --arch "${{ matrix.arch }}"
+          fi
+          test -x "$T/out/WiiCompiled-${{ matrix.arch }}.AppImage"
+          out=$("$T/out/WiiCompiled-${{ matrix.arch }}.AppImage" 2>&1)
+          echo "$out" | grep -q MKWII-SYNTHETIC-GAME-BOOT-OK
+
       # Asset-free validation that the harvested native-prebuilt package is
       # consumable (include tokens resolve, Dawn config + cryptopp archive
       # present). Needs no game dump: products stay disabled.
