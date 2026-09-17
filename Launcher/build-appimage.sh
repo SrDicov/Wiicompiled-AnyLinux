@@ -571,11 +571,11 @@ echo "Packaging the AppImage (DwarFS + uruntime)..."
 bash "$quick_sharun" --make-appimage
 
 built="$output_dir/WiiCompiled-Setup-$image_arch.AppImage"
-echo "Running post-build test gates..."
-if command -v xvfb-run >/dev/null 2>&1; then
-    bash "$quick_sharun" --test "$built"
-else
-    echo "WARNING: xvfb-run not available, falling back to --simple-test" >&2
-    bash "$quick_sharun" --simple-test "$built"
-fi
+echo "Running post-build test gate..."
+# --simple-test (not --test): --test's model is a long-running GUI that must
+# survive 12s, but wiicompiled-setup is a CLI that exits immediately by
+# design - --simple-test runs it and fails on loader errors
+# (symbol lookup error / error while loading shared libraries), which is
+# exactly the AnyLinux property under test here.
+bash "$quick_sharun" --simple-test "$built"
 echo "Built: $built"
