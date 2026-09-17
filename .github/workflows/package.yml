@@ -53,10 +53,20 @@ jobs:
       # volume) cannot run before this step.
       - name: Install build dependencies
         run: |
+          # SDL3 (vendored by aurora, built from source during the
+          # native-prebuilt harvest) needs its full X11/Wayland/audio
+          # header closure or its configure FATALS on the first missing
+          # piece. List mirrors the official Arch sdl3 PKGBUILD
+          # depends+makedepends, plus dbus/udev/X11-extras aurora wants.
           pacman -Syu --noconfirm \
             base-devel git curl wget python patchelf file unzip \
-            xorg-server-xvfb icu openssl zlib gawk grep sed findutils \
-            clang cmake ninja
+            pkgconf xorg-server-xvfb icu openssl zlib gawk grep sed findutils \
+            clang cmake ninja \
+            alsa-lib jack wayland-protocols wayland mesa libpulse libxrandr \
+            libxinerama libxkbcommon ibus libxss pipewire libdecor \
+            vulkan-headers sndio libxext libxrender libx11 libgl libxcursor \
+            hidapi libusb dbus systemd-libs libxi libxfixes libxtst libxcb \
+            libdrm libglvnd libthai liburing xorgproto
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
           bash /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet --no-path
