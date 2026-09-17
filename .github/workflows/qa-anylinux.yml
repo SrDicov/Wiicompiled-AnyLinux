@@ -24,6 +24,13 @@ on:
         default: "x86_64"
         type: choice
         options: [x86_64, aarch64]
+  # Push-triggered fallback: `workflow_dispatch` needs default-branch
+  # registration, which a feature branch lacks. Pushing a `qa-matrix-*` tag
+  # runs this workflow from the tag's own tree instead (defaults: latest
+  # green Package run, x86_64).
+  push:
+    tags:
+      - 'qa-matrix-*'
 
 permissions:
   contents: read
@@ -55,6 +62,8 @@ jobs:
     name: Probe (${{ matrix.image }})
     needs: [resolve]
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
+    env:
+      TEST_ARCH: ${{ inputs.arch != '' && inputs.arch || 'x86_64' }}
     strategy:
       fail-fast: false
       matrix:
@@ -79,7 +88,7 @@ jobs:
             arch: aarch64
     steps:
       - name: Download the AppImage under test
-        if: matrix.arch == inputs.arch
+        if: matrix.arch == env.TEST_ARCH
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -90,7 +99,7 @@ jobs:
           chmod +x WiiCompiled-Setup-*.AppImage
 
       - name: Boot probe (no FUSE, foreign userland)
-        if: matrix.arch == inputs.arch
+        if: matrix.arch == env.TEST_ARCH
         run: |
           cd qa
           img=$(echo WiiCompiled-Setup-*.AppImage)
