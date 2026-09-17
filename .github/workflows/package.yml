@@ -54,7 +54,7 @@ jobs:
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm \
-            base-devel git curl wget python patchelf file \
+            base-devel git curl wget python patchelf file unzip \
             xorg-server-xvfb icu openssl zlib gawk grep sed findutils \
             clang cmake ninja
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
