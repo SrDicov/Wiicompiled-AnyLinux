@@ -105,16 +105,22 @@ jobs:
           - image: alpine:latest
             arch: aarch64
     steps:
+      # NOTE: gh run download cannot fetch `archive:false` artifacts (not a
+      # zip) - the download-artifact action with run-id can.
       - name: Download the AppImage under test
         if: matrix.arch == env.TEST_ARCH
-        env:
-          GH_TOKEN: ${{ github.token }}
+        uses: actions/download-artifact@v7
+        with:
+          name: WiiCompiled-Setup-${{ env.TEST_ARCH }}.AppImage
+          path: qa
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Stage the AppImage under test
+        if: matrix.arch == env.TEST_ARCH
         run: |
-          mkdir -p qa && cd qa
-          gh run download "${{ needs.resolve.outputs.run_id }}" --repo "$GITHUB_REPOSITORY" \
-            --name "WiiCompiled-Setup-${{ env.TEST_ARCH }}.AppImage" --dir .
-          ls -l
-          chmod +x WiiCompiled-Setup-*.AppImage
+          ls -l qa
+          chmod +x qa/WiiCompiled-Setup-*.AppImage
 
       - name: Boot probe (no FUSE, foreign userland)
         if: matrix.arch == env.TEST_ARCH
