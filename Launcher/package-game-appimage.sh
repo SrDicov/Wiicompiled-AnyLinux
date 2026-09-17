@@ -110,8 +110,6 @@ for f in "$quick_sharun" \
         exit 1
     }
 done
-chmod +x "$quick_sharun" "$packaging/appimagetool"
-
 # Game support files: required ones are fatal when absent (the game hard
 # FATALs without them too - dsp ROM and WC24 bootstrap); the pipeline cache
 # is a warm-start optimization aurora regenerates, so warn-only.
@@ -126,6 +124,15 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/wii-game-pack-XXXXXX")
 trap 'rm -rf "$work"' EXIT
 appdir="$work/AppDir"
 mkdir -p "$appdir"
+
+# Copied (never chmodded in place): at install time $setup_appdir is a
+# READ-ONLY image mount, so any write there - even chmod - dies with EROFS
+# under set -e. All executables run from writable $work copies instead.
+mkdir -p "$work/pack-bin"
+cp -f "$quick_sharun" "$work/pack-bin/quick-sharun.sh"
+cp -f "$packaging/appimagetool" "$work/pack-bin/appimagetool"
+chmod +x "$work/pack-bin/quick-sharun.sh" "$work/pack-bin/appimagetool"
+quick_sharun="$work/pack-bin/quick-sharun.sh"
 
 # Stage the exe under its FINAL runtime name (quick-sharun derives install
 # names, strace matching and MAIN_BIN from basenames).
@@ -150,7 +157,7 @@ export PATH="$work/shimbin:$setup_appdir/bin:$PATH"
 
 deploy_args=("$stage_bin/$main_bin")
 # libdbus is dlopened (never linked) with a graceful no-bus fallback, so no
-#dep-walk would ever find it - but bundling it is what makes MPRIS music
+# dep-walk would ever find it - but bundling it is what makes MPRIS music
 # ducking work out of the box. Probe-only: absent host dbus just means the
 # feature stays unavailable, exactly like an unpackaged build.
 shopt -s nullglob
@@ -200,11 +207,9 @@ chmod +x "$appdir/sharun"
 for payload in "sharun+helper-libs-$arch.tar" "cross-libc-dlopen-$arch.tar"; do
     cp -f "$packaging/$payload" "${TMPDIR:-/tmp}/$payload"
 done
-cp -f "$packaging/appimagetool" "$work/appimagetool"
-chmod +x "$work/appimagetool"
 export SHARUN_LINK="file://$packaging/sharun+helper-libs-$arch.tar"
 export CROSS_LIBC_DLOPEN_LINK="file://$packaging/cross-libc-dlopen-$arch.tar"
-export APPIMAGETOOL="$work/appimagetool"
+export APPIMAGETOOL="$work/pack-bin/appimagetool"
 export SKIP_INTEGRITY_CHECKS=1
 # Paint-by-numbers icon: the game ships no icon asset; reuse the setup one
 # from the running image when present, else a solid placeholder.
