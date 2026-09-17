@@ -137,8 +137,11 @@ done
 # than any target distro's (bundled glibc must be >= host glibc everywhere the
 # image runs) and quick-sharun's LIB_DIR detection assumes the Arch layout
 # (Fedora's /usr/lib 32-bit mix breaks it; Ubuntu's old glibc poisons it).
-if [[ "${ALLOW_NON_ARCH_BUILD:-0}" != "1" ]] && ! grep -qi '^ID=arch' /etc/os-release 2>/dev/null; then
+if [[ "${ALLOW_NON_ARCH_BUILD:-0}" != "1" ]] && ! grep -qi '^ID=\(arch\|artix\|endeavouros\)$' /etc/os-release 2>/dev/null; then
     echo "build-appimage.sh: error: AppImage builds MUST run on Arch Linux (see comment above)." >&2
+    echo "Also accepted: Artix and EndeavourOS (same official repos/glibc). Deliberately NOT" >&2
+    echo "accepted: Manjaro (stale glibc) and CachyOS (x86-64-v3/v4-optimized repos would bake" >&2
+    echo "a CPU floor into every bundled library)." >&2
     echo "Set ALLOW_NON_ARCH_BUILD=1 to override (resulting image will likely NOT be portable)." >&2
     exit 1
 fi
