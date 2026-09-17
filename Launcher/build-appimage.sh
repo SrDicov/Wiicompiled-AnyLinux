@@ -322,6 +322,12 @@ rm -rf "$snapshot/workspace/aurora-main/tests" "$snapshot/workspace/aurora-main/
     "$snapshot/workspace"/runtime/cmake-build-* "$snapshot/workspace"/build* \
     "$snapshot/workspace"/.git
 cp "$workspace/Launcher/local-build.sh" "$snapshot/workspace/Launcher/local-build.sh"
+cp "$workspace/Launcher/package-game-appimage.sh" "$snapshot/workspace/Launcher/package-game-appimage.sh"
+# Static gate: local-build.sh invokes this exact path for --package-appimage.
+# A missing file would only surface on end-user machines (CI never has game
+# assets), so fail the image build itself instead.
+[[ -f "$snapshot/workspace/Launcher/package-game-appimage.sh" ]] || {
+    echo "build-appimage.sh: error: game packager missing from snapshot" >&2; exit 1; }
 
 # The hook re-syncs runtime/aurora-main/projects/local-build.sh into the writable cache only when
 # this changes, so it must change whenever any of those bundled paths actually did - a bare commit

@@ -41,6 +41,7 @@ fi
 # be unacceptable). Order matters: script first, stamp last, so any kill
 # heals on the next launch either via mismatch or via this same copy.
 cp "$APPDIR/workspace/Launcher/local-build.sh" "$WIIC_CACHE/Launcher/local-build.sh"
+cp "$APPDIR/workspace/Launcher/package-game-appimage.sh" "$WIIC_CACHE/Launcher/package-game-appimage.sh"
 cp "$APPDIR/workspace/.bundle-version" "$WIIC_CACHE/.bundle-version"
 [ -L "$WIIC_CACHE/toolchain" ] || rm -rf "$WIIC_CACHE/toolchain"
 [ -L "$WIIC_CACHE/native-prebuilt" ] || rm -rf "$WIIC_CACHE/native-prebuilt"
