@@ -55,11 +55,21 @@ jobs:
             echo "run_id=$WANT" >> "$GITHUB_OUTPUT"
           else
             # Green Package runs live on anylinux-* refs (feature branch and
-            # ci-probe tags alike) - match by ref prefix, not exact branch.
-            rid=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "Package installers" \
+            # ci-probe tags alike) - but all-skipped runs (e.g. qa-matrix-*
+            # tags) are "successful" with zero artifacts, so verify the
+            # wanted artifact actually exists on the candidate run.
+            rid=""
+            while IFS= read -r cand; do
+              if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$cand/artifacts" \
+                  --jq '.artifacts[].name' 2>/dev/null | grep -qx "WiiCompiled-Setup-linux-${{ inputs.arch != '' && inputs.arch || 'x86_64' }}"; then
+                rid=$cand
+                break
+              fi
+            done < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow "Package installers" \
               --status success --limit 20 --json databaseId,headBranch \
-              --jq '[.[] | select(.headBranch | startswith("anylinux-"))][0].databaseId')
-            [[ -n "$rid" && "$rid" != "null" ]] || { echo "::error::no successful Package installers run found"; exit 1; }
+              --jq '[.[] | select(.headBranch | startswith("anylinux-"))][].databaseId')
+            [[ -n "$rid" ]] || { echo "::error::no successful Package installers run found (with artifacts)"; exit 1; }
+            echo "run picked: $rid"
             echo "run_id=$rid" >> "$GITHUB_OUTPUT"
           fi
 
