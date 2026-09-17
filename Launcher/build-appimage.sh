@@ -580,6 +580,39 @@ cp "$appimage_dir/00-wiicompiled-workspace.hook" "$appdir/bin/00-wiicompiled-wor
 [[ -f "$appdir/workspace/Launcher/package-game-appimage.sh" ]] || {
     echo "build-appimage.sh: error: game packager missing from AppDir" >&2; exit 1; }
 
+# gcompat-host fix: every bundled dynamic executable keeps PT_INTERP pointing
+# at the host path (/lib64/ld-linux-...). That is correct on glibc hosts but
+# fatal where the path is a musl gcompat stub (Void installs gcompat, whose
+# 1.1.0 loader cannot satisfy modern glibc symbols like __isoc23_* or
+# arc4random): any directly-exec'd helper (bash/cmake/ninja/clang/patchelf/...)
+# dies with "Error relocating ... symbol not found". The main binary never hit
+# this because sharun launches it through the bundled loader explicitly - only
+# the local-build.sh subtree (kernel execs via shebang/PATH) does.
+# Fix: point all bundled executables at the same /tmp/.ld-sharun.so.NN loader
+# our dotnet single-file main binary already uses. sharun materializes that
+# file at every launch (verified: present after --version), so this reuses
+# quick-sharun's own proven mechanism with zero extra runtime work. The exact
+# name is read off the main binary (set by quick-sharun), never hardcoded.
+command -v patchelf >/dev/null || {
+    echo "build-appimage.sh: error: patchelf is required for the INTERP fix" >&2; exit 1; }
+_target_interp=$(patchelf --print-interpreter "$appdir/shared/bin/${MAIN_BIN:?}" 2>/dev/null || true)
+[[ "$_target_interp" == /tmp/.ld-sharun.so.* ]] || {
+    echo "build-appimage.sh: error: cannot derive sharun loader path from $MAIN_BIN (got '$_target_interp')" >&2; exit 1; }
+echo "Re-pointing bundled executables at $_target_interp (gcompat-host fix)..."
+_reinterp_count=0
+while IFS= read -r _bin; do
+    _cur=$(patchelf --print-interpreter "$_bin" 2>/dev/null || true)
+    case "$_cur" in
+        /lib/*)
+            patchelf --set-interpreter "$_target_interp" "$_bin" || {
+                echo "build-appimage.sh: error: patchelf failed on $_bin" >&2; exit 1; }
+            _reinterp_count=$((_reinterp_count + 1)) ;;
+    esac
+done < <(find "$appdir" -type f -perm -111 -print)
+echo "Re-pointed $_reinterp_count executables at $_target_interp."
+[[ "$_reinterp_count" -gt 0 ]] || {
+    echo "build-appimage.sh: error: INTERP fix applied to zero binaries (layout changed?)" >&2; exit 1; }
+
 # Offline game-packaging payloads: quick-sharun just downloaded exactly these
 # files (hash-verified against its own pins) to stage THIS image, so copy the
 # same bytes for the install-time game packaging step
