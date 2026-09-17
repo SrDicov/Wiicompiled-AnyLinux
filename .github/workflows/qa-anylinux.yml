@@ -44,6 +44,8 @@ jobs:
     runs-on: ubuntu-22.04
     outputs:
       run_id: ${{ steps.pick.outputs.run_id }}
+    env:
+      TEST_ARCH: ${{ inputs.arch || (startsWith(github.ref, 'refs/tags/qa-matrix-arm-') && 'aarch64' || 'x86_64') }}
     steps:
       - name: Pick the Package installers run
         id: pick
@@ -64,7 +66,7 @@ jobs:
             rid=""
             while IFS= read -r cand; do
               if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$cand/artifacts" \
-                  --jq '.artifacts[].name' 2>/dev/null | grep -qx "WiiCompiled-Setup-${{ inputs.arch != '' && inputs.arch || 'x86_64' }}.AppImage"; then
+                  --jq '.artifacts[].name' 2>/dev/null | grep -qx "WiiCompiled-Setup-${{ env.TEST_ARCH }}.AppImage"; then
                 rid=$cand
                 break
               fi
@@ -81,7 +83,7 @@ jobs:
     needs: [resolve]
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
     env:
-      TEST_ARCH: ${{ inputs.arch != '' && inputs.arch || 'x86_64' }}
+      TEST_ARCH: ${{ inputs.arch || (startsWith(github.ref, 'refs/tags/qa-matrix-arm-') && 'aarch64' || 'x86_64') }}
     strategy:
       fail-fast: false
       matrix:
