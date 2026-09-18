@@ -266,6 +266,34 @@ if [[ -f "$appdir/share/game/initial_pipeline_cache.db" ]]; then
     ln -sfn ../share/game/initial_pipeline_cache.db "$appdir/bin/initial_pipeline_cache.db"
 fi
 
+echo "Seeding the hermetic libc-family set (musl-host fix)..."
+# quick-sharun cannot provision glibc-family libs on hosts without them
+# (musl has no libc.so.6/libdl.so.2; its libm.a stub even poisons -lm), and
+# host-polluted picks (musl libstdc++) would mix libcs at runtime and die.
+# Overwrite flat into lib/ from the setup image itself: byte-identical to
+# what the game linked against (the toolchain resolves these first-hit from
+# the same files), so the game image carries zero host libs on ANY host.
+# (Passing them as deploy_args instead misplaces them under lib/<abspath>.)
+_sh_seeded=0
+for _seed in libc.so.6 libm.so.6 libstdc++.so.6 libgcc_s.so.1 libz.so.1 \
+            libdl.so.2 libpthread.so.0 librt.so.1 libresolv.so.2; do
+    if [[ -f "$setup_appdir/lib/$_seed" ]]; then
+        cp -Lf "$setup_appdir/lib/$_seed" "$appdir/lib/$_seed" || {
+            echo "package-game-appimage.sh: error: cannot seed $_seed" >&2; exit 1; }
+        _sh_seeded=$((_sh_seeded + 1))
+    else
+        echo "package-game-appimage.sh: error: seed lib missing from setup image: $setup_appdir/lib/$_seed" >&2
+        exit 1
+    fi
+done
+shopt -s nullglob
+_ld_seeds=( "$setup_appdir"/lib/ld-linux-*.so.* )
+shopt -u nullglob
+[[ "${#_ld_seeds[@]}" -eq 1 ]] || {
+    echo "package-game-appimage.sh: error: expected exactly one setup loader, got: ${_ld_seeds[*]}" >&2; exit 1; }
+cp -Lf "${_ld_seeds[0]}" "$appdir/lib/$(basename "${_ld_seeds[0]}")" || {
+    echo "package-game-appimage.sh: error: cannot seed loader" >&2; exit 1; }
+echo "Seeded $((_sh_seeded + 1)) libc-family libs from the setup image."
 echo "Regenerating sharun lib.path..."
 "$appdir/sharun" -g
 
