@@ -1,0 +1,76 @@
+#!/bin/sh
+# 00-wiicompiled-workspace.hook - sourced by AppRun.sh on every launch, before
+# the main binary runs. Prepares the writable workspace cache that
+# local-build.sh compiles the game in.
+#
+# An AppImage mounts read-only, but local-build.sh writes generated/,
+# native-build/, Assets/, etc. into the workspace it is given, so the bundled
+# workspace snapshot is copied out to a writable cache directory on first run
+# and only ever re-synced when the bundled version changed - generated/,
+# native-build/, Assets/ and PulsarPacks/ live only in that writable cache and
+# are never touched by the sync, so local-build.sh's own incremental caching
+# survives across runs and across AppImage updates. translator/ is not part of
+# this snapshot: it ships as its own self-contained binary (bin/translator-cli)
+# and never needs a writable copy.
+#
+# toolchain/ and native-prebuilt/ are NOT copied into the cache either (large,
+# read-only inputs): $CACHE/toolchain and $CACHE/native-prebuilt are symlinks
+# re-pointed at the current mount on every single launch, unconditionally -
+# the mount path changes every run, and CMake bakes whatever compiler/tool
+# path it is given directly into each build.ninja rule's command line, so a
+# changing path string would force a full rebuild on every launch. The symlink
+# keeps the path string stable while tracking the current mount underneath.
+#
+# POSIX sh only: hooks are sourced by AppRun.sh, do not use bashisms here and
+# do not call `set -u` (AppRun.sh legitimately runs with zero arguments).
+
+WIIC_CACHE="${XDG_DATA_HOME:-$HOME/.local/share}/WiiCompiled/workspace"
+mkdir -p "$WIIC_CACHE" "$WIIC_CACHE/Launcher"
+if [ ! -f "$WIIC_CACHE/.bundle-version" ] || \
+   [ "$(cat "$APPDIR/workspace/.bundle-version")" != "$(cat "$WIIC_CACHE/.bundle-version")" ]; then
+    for _d in runtime aurora-main projects; do
+        rm -rf "$WIIC_CACHE/$_d"
+        cp -r "$APPDIR/workspace/$_d" "$WIIC_CACHE/$_d"
+    done
+fi
+# ALWAYS refreshed (tiny files, milliseconds): this makes script staleness
+# structurally impossible - no version stamp, timestamp quirk, killed sync or
+# disk-full window can ever leave a stale local-build.sh behind, because the
+# stamp and the script travel together on every single launch. The big trees
+# above stay version-gated for speed (rm+cp of ~1 GiB on every launch would
+# be unacceptable). Order matters: script first, stamp last, so any kill
+# heals on the next launch either via mismatch or via this same copy.
+cp "$APPDIR/workspace/Launcher/local-build.sh" "$WIIC_CACHE/Launcher/local-build.sh"
+cp "$APPDIR/workspace/Launcher/package-game-appimage.sh" "$WIIC_CACHE/Launcher/package-game-appimage.sh"
+cp "$APPDIR/workspace/.bundle-version" "$WIIC_CACHE/.bundle-version"
+[ -L "$WIIC_CACHE/toolchain" ] || rm -rf "$WIIC_CACHE/toolchain"
+[ -L "$WIIC_CACHE/native-prebuilt" ] || rm -rf "$WIIC_CACHE/native-prebuilt"
+ln -sfn "$APPDIR/toolchain" "$WIIC_CACHE/toolchain"
+ln -sfn "$APPDIR/native-prebuilt" "$WIIC_CACHE/native-prebuilt"
+# AppRun.sh execs bin/$MAIN_BIN with "$@" verbatim (it prepends the target
+# itself after sourcing hooks), so inject the defaults the old hand-written
+# AppRun used to pass explicitly. Prepended, never appended: if the caller
+# passes their own flags (plain-checkout use), theirs come later and win in
+# Program.cs's flag parsing (last wins). Harmless for --version/--help
+# (checked before parsing) and for subcommands that ignore them.
+set -- --workspace "$WIIC_CACHE" "$@"
+# Full tool set (1:1 with the old AppRun - dropping these silently breaks
+# EVERY real install: local-build.sh would build the translator from source
+# (needs a dotnet SDK) and use HOST clang/cmake/ninja (needs host dev
+# packages) instead of the bundled ones). $APPDIR/bin/* are sharun hardlinks
+# (dispatch-safe); toolchain paths keep the stable $CACHE symlink form that
+# CMake bakes into build.ninja.
+set -- --translator-bin "$APPDIR/bin/translator-cli" \
+       --disc-tool-bin "$APPDIR/bin/nodtool" \
+       --cc "$WIIC_CACHE/toolchain/bin/clang" \
+       --cxx "$WIIC_CACHE/toolchain/bin/clang++" \
+       --fuse-ld lld \
+       --cmake "$WIIC_CACHE/toolchain/bin/cmake" \
+       --ninja "$WIIC_CACHE/toolchain/bin/ninja" \
+       --native-prebuilt-dir "$WIIC_CACHE/native-prebuilt" \
+       "$@"
+# Exported (not just set) so it survives the exec into wiicompiled-setup:
+# Program.cs reads $SETUP_APPDIR to locate the pre-seeded offline
+# game-packaging payloads under $SETUP_APPDIR/packaging/. anylinux.so only
+# scrubs its known-bad list (GCONV_PATH et al); custom names pass through.
+export SETUP_APPDIR="$APPDIR"

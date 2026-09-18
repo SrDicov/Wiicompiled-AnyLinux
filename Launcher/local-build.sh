@@ -66,6 +66,8 @@ translator_bin_override=""
 fuse_ld_override=""
 native_prebuilt_dir=""
 sysroot=""
+package_appimage=0
+setup_appdir=""
 
 usage() {
     cat <<'EOF'
@@ -90,6 +92,10 @@ Usage: local-build.sh --output-dir DIR [options]
                                    skips compiling aurora-main from source entirely
   --sysroot PATH                   Passed to CMake as -DCMAKE_SYSROOT: where the compiler resolves
                                    standard headers/startup files
+  --package-appimage             Wrap each published product as a portable AnyLinux AppImage
+                                   next to the raw binary (see Launcher/package-game-appimage.sh)
+  --setup-appdir DIR             Running setup image's $APPDIR (provides the pre-seeded
+                                   offline packaging payloads); required with --package-appimage
 EOF
 }
 
@@ -114,6 +120,8 @@ while [[ $# -gt 0 ]]; do
         --translator-bin) translator_bin_override=$2; shift 2 ;;
         --native-prebuilt-dir) native_prebuilt_dir=$2; shift 2 ;;
         --sysroot) sysroot=$2; shift 2 ;;
+        --package-appimage) package_appimage=1; shift ;;
+        --setup-appdir) setup_appdir=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) fail "unknown argument: $1" ;;
     esac
@@ -147,6 +155,9 @@ if [[ "$profile" == "both" && -z "$base_output_dir" ]]; then
 fi
 if [[ "$profile" != "both" && -n "$base_output_dir" ]]; then
     fail "--base-output-dir is valid only with --profile both."
+fi
+if (( package_appimage )) && [[ -z "$setup_appdir" ]]; then
+    fail "--package-appimage requires --setup-appdir (the running setup image's \$APPDIR)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -405,12 +416,33 @@ configure_args=(-S "$workspace/runtime" -B "$build" -G Ninja
 # each subsequent run's differing command line then made Ninja rebuild every object from scratch
 # even though nothing had actually changed. Deriving these from $cc_bin (itself already stable)
 # and re-passing them explicitly every configure keeps them pinned to the same stable value too.
+# Bundled C library + libstdc++ headers (musl-host fix): the setup image's
+# toolchain ships its own glibc/libstdc++ headers under toolchain/include/
+# (staged by build-appimage.sh); the host /usr/include otherwise wins, and
+# musl headers fail the build with __GLIBC_PREREQ errors (verified on Void).
+# Derived from --cc exactly like $toolchain_bin above, and kept in the
+# $CACHE-symlink form (plain textual ../include, never cd/pwd-resolved) so the
+# baked path stays stable across AppImage runs. Passed via -isystem (not -I):
+# these are system headers, warnings off. Bare --cc (plain-checkout host
+# toolchain) yields no slash and keeps today's behavior untouched.
+toolchain_cflags=()
 if [[ "$cc_bin" == */* ]]; then
     toolchain_bin=$(dirname "$cc_bin")
+    _toolchain_include="$toolchain_bin/../include"
+    if [[ -f "$_toolchain_include/features.h" ]]; then
+        toolchain_cflags=(-isystem "$_toolchain_include")
+    fi
     [[ -x "$toolchain_bin/llvm-ar" ]] && configure_args+=(-DCMAKE_AR="$toolchain_bin/llvm-ar" -DCMAKE_ASM_COMPILER_AR="$toolchain_bin/llvm-ar" -DCMAKE_C_COMPILER_AR="$toolchain_bin/llvm-ar" -DCMAKE_CXX_COMPILER_AR="$toolchain_bin/llvm-ar")
     [[ -x "$toolchain_bin/llvm-ranlib" ]] && configure_args+=(-DCMAKE_RANLIB="$toolchain_bin/llvm-ranlib" -DCMAKE_ASM_COMPILER_RANLIB="$toolchain_bin/llvm-ranlib" -DCMAKE_C_COMPILER_RANLIB="$toolchain_bin/llvm-ranlib" -DCMAKE_CXX_COMPILER_RANLIB="$toolchain_bin/llvm-ranlib")
     [[ -x "$toolchain_bin/ld.lld" ]] && configure_args+=(-DCMAKE_LINKER="$toolchain_bin/ld.lld")
     configure_args+=(-DCMAKE_ASM_COMPILER="$cc_bin")
+fi
+# Hermetic headers into every compile INCLUDING cmake's own try-compiles
+# (CMAKE_<LANG>_FLAGS apply to those too - that is what un-breaks compiler
+# detection on musl hosts, where the try-compile otherwise picks musl headers
+# and dies before building a single object).
+if (( ${#toolchain_cflags[@]} )); then
+    configure_args+=(-DCMAKE_C_FLAGS="${toolchain_cflags[*]}" -DCMAKE_CXX_FLAGS="${toolchain_cflags[*]}")
 fi
 if [[ -n "$fuse_ld_override" ]]; then
     configure_args+=(-DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$fuse_ld_override")
@@ -494,5 +526,32 @@ case "$profile" in
         publish_built_product WiiCompiled "$output_dir" base
         ;;
 esac
+
+# Portable game images, one per published product. Off unless requested, so
+# direct local-build.sh users keep raw-binary behavior; the setup installer
+# passes --package-appimage (unless --no-game-appimage) with its own $APPDIR.
+if (( package_appimage )); then
+    packager=$workspace/Launcher/package-game-appimage.sh
+    [[ -f "$packager" ]] || fail "Game packager is missing: $packager"
+    package_built_product() {
+        local target=$1 destination=$2 provenance_profile=$3
+        log_step package-appimage "Wrapping $target as a portable AppImage"
+        bash "$packager" --game-exe "$destination/$target" --data-dir "$destination" \
+            --setup-appdir "$setup_appdir" \
+            --output "$destination/$target-$(uname -m).AppImage" --profile "$provenance_profile"
+    }
+    case "$profile" in
+        both)
+            package_built_product WiiCompiled "$base_output_dir" base
+            package_built_product RetroRewind "$output_dir" retro-rewind
+            ;;
+        retro-rewind)
+            package_built_product RetroRewind "$output_dir" retro-rewind
+            ;;
+        base)
+            package_built_product WiiCompiled "$output_dir" base
+            ;;
+    esac
+fi
 
 echo "MKWCBUILD:OUTPUT=$output_dir"

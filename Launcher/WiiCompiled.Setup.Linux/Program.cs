@@ -152,6 +152,36 @@ internal static class Program
             throw new ArgumentException("--sysroot requires a non-empty directory path.");
         }
 
+        // Unless opted out, every installed product is additionally wrapped as
+        // a portable game AppImage next to the raw binary (see
+        // Launcher/package-game-appimage.sh): the raw binary links the host
+        // toolchain's libraries and only runs on the build machine, while the
+        // image bundles its whole closure and runs anywhere. The setup image's
+        // hook exports SETUP_APPDIR pointing at the pre-seeded offline
+        // packaging payloads; an explicit flag wins for plain-checkout runs.
+        var noGameAppImage = flags.ContainsKey("no-game-appimage");
+        string? setupAppDir = null;
+        string? gameImageArch = null;
+        if (!noGameAppImage)
+        {
+            setupAppDir = flags.GetValueOrDefault("setup-appdir")
+                ?? Environment.GetEnvironmentVariable("SETUP_APPDIR");
+            if (string.IsNullOrWhiteSpace(setupAppDir))
+            {
+                throw new InvalidOperationException(
+                    "Game AppImage packaging needs --setup-appdir (or the SETUP_APPDIR " +
+                    "environment from the setup AppImage). Pass --no-game-appimage to install " +
+                    "a plain unpackaged game binary instead.");
+            }
+            gameImageArch = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture switch
+            {
+                // Same mapping NodToolProvider.cs uses for its prebuilt assets.
+                System.Runtime.InteropServices.Architecture.X64 => "x86_64",
+                System.Runtime.InteropServices.Architecture.Arm64 => "aarch64",
+                var other => throw new PlatformNotSupportedException($"No game AppImage architecture mapping for {other}"),
+            };
+        }
+
         await BuildRunner.RunAsync(
             workspace, profile, installDir, baseInstallDir,
             retroDir,
@@ -166,6 +196,8 @@ internal static class Program
             flags.GetValueOrDefault("ninja"),
             flags.GetValueOrDefault("native-prebuilt-dir"),
             sysroot,
+            !noGameAppImage,
+            setupAppDir,
             reporter, token);
 
         reporter.Progress(InstallStages.Shortcuts, "Creating shortcuts", 98);
@@ -176,18 +208,23 @@ internal static class Program
         {
             var dir = p == "base" ? (baseInstallDir ?? installDir) : installDir;
             var exeName = p == "base" ? "WiiCompiled" : "RetroRewind";
+            // The installed AND launched artifact: the portable game AppImage
+            // local-build.sh wrapped beside the raw binary (which stays as a
+            // debug fallback). Launch/check-products need no changes - they
+            // already treat ExecutableName as an opaque filename.
+            var launchName = noGameAppImage ? exeName : $"{exeName}-{gameImageArch}.AppImage";
             var displayName = p == "base" ? "WiiCompiled (base game)" : "WiiCompiled (Retro Rewind)";
             state.Products.RemoveAll(r => r.Profile == p);
             state.Products.Add(new ProductInstallRecord
             {
                 Profile = p,
                 InstallDirectory = dir,
-                ExecutableName = exeName,
+                ExecutableName = launchName,
                 DolSha256 = dolSha,
                 RelSha256 = relSha,
                 BuiltUtc = DateTime.UtcNow.ToString("O"),
             });
-            DesktopEntry.Create(p, displayName, Path.Combine(dir, exeName));
+            DesktopEntry.Create(p, displayName, Path.Combine(dir, launchName));
         }
         JsonState.Write(StatePath, state);
 
@@ -331,10 +368,11 @@ internal static class Program
         Usage: wiicompiled-setup <command> [options]
 
           install [--game ISO_PATH] [--install-dir DIR] [--retro-dir DIR
-                  {--download-retro-wfc-payload | --skip-retro-wfc-payload}]
-                  [--force-clean-build] [--translator-bin PATH] [--disc-tool-bin PATH]
-                  [--cc PATH] [--cxx PATH] [--fuse-ld NAME_OR_PATH] [--cmake PATH] [--ninja PATH]
-                  [--native-prebuilt-dir DIR] [--sysroot PATH] [--progress-json] [--workspace DIR]
+                   {--download-retro-wfc-payload | --skip-retro-wfc-payload}]
+                   [--force-clean-build] [--translator-bin PATH] [--disc-tool-bin PATH]
+                   [--cc PATH] [--cxx PATH] [--fuse-ld NAME_OR_PATH] [--cmake PATH] [--ninja PATH]
+                   [--native-prebuilt-dir DIR] [--sysroot PATH] [--progress-json] [--workspace DIR]
+                   [--no-game-appimage] [--setup-appdir DIR]
           uninstall
           launch-base
           launch-retro

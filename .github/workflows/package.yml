@@ -22,10 +22,15 @@ concurrency:
 jobs:
   recompilation:
     name: Recompilation test
+    # qa-matrix-* tags exercise already-built artifacts; they must not spend
+    # Windows runners recompiling the world again.
+    if: ${{ !startsWith(github.ref, 'refs/tags/qa-matrix-') }}
     uses: ./.github/workflows/recomp-test.yml
 
   linux-appimage:
     name: Linux (AppImage, ${{ matrix.arch }})
+    # See above: qa-matrix-* tags only run the QA matrix workflow.
+    if: ${{ !startsWith(github.ref, 'refs/tags/qa-matrix-') }}
     strategy:
       fail-fast: false
       matrix:
@@ -35,30 +40,102 @@ jobs:
           - runner: ubuntu-22.04-arm
             arch: aarch64
     runs-on: ${{ matrix.runner }}
+    # AnyLinux method: the image bundles its own glibc, so it MUST be built
+    # on Arch (fresh glibc + the /usr/lib layout quick-sharun expects).
+    # Ubuntu/Fedora hosts produce images that are NOT portable - see
+    # Launcher/build-appimage.sh's ALLOW_NON_ARCH_BUILD guard.
+    container: ghcr.io/pkgforge-dev/archlinux:latest
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: '8.0.x'
-
-      # appimagetool ships as an AppImage itself and needs to self-mount via FUSE to run directly;
-      # GitHub's ubuntu-latest runners don't have libfuse2 preinstalled.
-      - name: Install dependencies (required by appimagetool and SDL3 build)
+      # Arch no longer packages a .NET 8 SDK, and the build needs exactly that
+      # (global.json / TargetFramework net8.0), so the SDK comes from
+      # Microsoft's install script into /usr/share/dotnet instead of pacman.
+      # NOTE: git must be installed here first - the bare Arch container ships
+      # without it, so even `git config` (safe.directory for the checkout
+      # volume) cannot run before this step.
+      - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libfuse2 build-essential git make \
-            pkg-config cmake ninja-build gnome-desktop-testing libasound2-dev libpulse-dev \
-            libaudio-dev libfribidi-dev libjack-dev libsndio-dev libx11-dev libxext-dev \
-            libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
-            libxkbcommon-dev libdrm-dev libgbm-dev libgl1-mesa-dev libgles2-mesa-dev \
-            libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev libudev-dev libthai-dev libusb-1.0-0-dev \
-            libpipewire-0.3-dev libwayland-dev libdecor-0-dev liburing-dev
+          # SDL3 (vendored by aurora, built from source during the
+          # native-prebuilt harvest) needs its full X11/Wayland/audio
+          # header closure or its configure FATALS on the first missing
+          # piece. List mirrors the official Arch sdl3 PKGBUILD
+          # depends+makedepends, plus dbus/udev/X11-extras aurora wants.
+          pacman -Syu --noconfirm \
+            base-devel git curl wget python patchelf file unzip \
+            pkgconf xorg-server-xvfb icu openssl zlib gawk grep sed findutils \
+            clang cmake ninja \
+            alsa-lib jack wayland-protocols wayland mesa libpulse libxrandr \
+            libxinerama libxkbcommon ibus libxss pipewire libdecor \
+            vulkan-headers sndio libxext libxrender libx11 libgl libxcursor \
+            hidapi libusb dbus systemd-libs libxi libxfixes libxtst libxcb \
+            libdrm libglvnd libthai liburing xorgproto
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+          bash /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet --no-path
+          echo "/usr/share/dotnet" >> "$GITHUB_PATH"
+          echo "DOTNET_ROOT=/usr/share/dotnet" >> "$GITHUB_ENV"
+          echo "DOTNET_CLI_TELEMETRY_OPTOUT=1" >> "$GITHUB_ENV"
+          echo "DOTNET_NOLOGO=1" >> "$GITHUB_ENV"
+          /usr/share/dotnet/dotnet --list-sdks
 
       - name: Build AppImage
         run: bash Launcher/build-appimage.sh
+
+      # Offline end-to-end test of install-time game packaging
+      # (Launcher/package-game-appimage.sh) with a synthetic binary: proves
+      # the whole chain works with zero network (the pre-seeded file://
+      # payloads) and yields a bootable game image. Needs no game dump.
+      # Dead proxies (not unshare - userns is denied inside containers) make
+      # ANY network attempt fail fast: curl/wget honor them, file:// ignores
+      # them, so success == hermetic pack.
+      - name: Synthetic game-pack test (offline)
+        run: |
+          set -euo pipefail
+          export http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9
+          export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9
+          APPDIR="$GITHUB_WORKSPACE/Launcher/artifacts/appimage-build/AppDir"
+          T="$GITHUB_WORKSPACE/synthetic-game-test"
+          mkdir -p "$T/src" "$T/data/wii_bootstrap/shared2/wc24" "$T/out"
+          cat > "$T/src/game.cpp" <<'EOF'
+          #include <cstdio>
+          int main() { std::printf("MKWII-SYNTHETIC-GAME-BOOT-OK\n"); return 0; }
+          EOF
+          "$APPDIR/toolchain/bin/clang++" -O2 "$T/src/game.cpp" -o "$T/src/WiiCompiled"
+          echo fake-dsp > "$T/data/dsp_coef.bin"
+          echo fake-wc24 > "$T/data/wii_bootstrap/shared2/wc24/misc.bin"
+          echo fake-pipe > "$T/data/initial_pipeline_cache.db"
+          if unshare -rn true 2>/dev/null; then
+            echo "Packaging with the network namespace disabled (offline proof)..."
+            unshare -rn bash Launcher/package-game-appimage.sh \
+              --game-exe "$T/src/WiiCompiled" --data-dir "$T/data" \
+              --setup-appdir "$APPDIR" \
+              --output "$T/out/WiiCompiled-${{ matrix.arch }}.AppImage" \
+              --profile base --arch "${{ matrix.arch }}"
+          else
+            echo "WARNING: unshare unavailable, packaging with network up" >&2
+            bash Launcher/package-game-appimage.sh \
+              --game-exe "$T/src/WiiCompiled" --data-dir "$T/data" \
+              --setup-appdir "$APPDIR" \
+              --output "$T/out/WiiCompiled-${{ matrix.arch }}.AppImage" \
+              --profile base --arch "${{ matrix.arch }}"
+          fi
+          test -x "$T/out/WiiCompiled-${{ matrix.arch }}.AppImage"
+          out=$("$T/out/WiiCompiled-${{ matrix.arch }}.AppImage" 2>&1)
+          echo "$out" | grep -q MKWII-SYNTHETIC-GAME-BOOT-OK
+
+      # Asset-free validation that the harvested native-prebuilt package is
+      # consumable (include tokens resolve, Dawn config + cryptopp archive
+      # present). Needs no game dump: products stay disabled.
+      - name: Smoke-test native-prebuilt consumption
+        run: |
+          cmake -S runtime -B /tmp/np-smoke -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            "-DMKW_NATIVE_PREBUILT_DIR=$GITHUB_WORKSPACE/Launcher/artifacts/native-prebuilt-${{ matrix.arch }}" \
+            -DMKW_BUILD_PRODUCTS=OFF
 
       - uses: actions/upload-artifact@v7
         with:
@@ -69,6 +146,8 @@ jobs:
 
   windows-installer:
     name: Windows (installer exe)
+    # See recompilation job: qa-matrix-* tags only run the QA matrix workflow.
+    if: ${{ !startsWith(github.ref, 'refs/tags/qa-matrix-') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
