@@ -244,6 +244,22 @@ case "$arch" in
 esac
 printf '/* Portable libc link script (no absolute host paths; resolved via library search dirs) */\nOUTPUT_FORMAT(%s)\nGROUP ( libc.so.6 libc_nonshared.a AS_NEEDED ( %s ) )\n' \
     "$_elf_fmt" "$_ld_name" > "$gcc_install_dir/libc.so"
+# libm.so.6 + portable libm.so: musl hosts ship an 8-byte stub libm.a that
+# silently satisfies -lm and yields undefined round/atan/... (proven by a
+# real 106 MB game link on Void); the distro libm.so GROUP()s absolute host
+# paths. libz.so likewise (no linker name on hosts without zlib-dev; NixOS
+# has no /usr/lib at all). All resolved first-hit from this dir (DwarFS
+# dedups identical content, so the copies cost ~nothing).
+for _f in libm.so.6; do
+    _src=$(cc -print-file-name="$_f")
+    [[ -f "$_src" ]] || { echo "prepare-portable-tools.sh: error: host file missing for $_f" >&2; exit 1; }
+    cp -L "$_src" "$gcc_install_dir/"
+done
+_zlink=$(cc -print-file-name=libz.so)
+[[ -e "$_zlink" ]] || { echo "prepare-portable-tools.sh: error: host has no libz.so" >&2; exit 1; }
+cp -L "$_zlink" "$gcc_install_dir/libz.so"
+printf '/* Portable libm link script (no absolute host paths) */\nOUTPUT_FORMAT(%s)\nGROUP ( libm.so.6 )\n' \
+    "$_elf_fmt" > "$gcc_install_dir/libm.so"
 # Headers: exact file lists from the Arch glibc + kernel-header packages
 # (never a blind /usr/include copy - that would drag in LLVM/host-only
 # headers). Merges under include/ beside the libc++ tree above (c++/v1/
@@ -329,10 +345,15 @@ trap 'rm -rf "$test_dir"' EXIT
 cat > "$test_dir/t.cpp" <<'EOF'
 #include <vector>
 #include <cstdio>
+#include <cmath>
 int main() {
     std::vector<int> v{1, 2, 3};
     int sum = 0;
     for (int x : v) sum += x;
+    // libm must come from the harvest too (musl hosts ship a stub libm.a
+    // that silently satisfies -lm and leaves these undefined - proven by a
+    // real game link on Void).
+    if (std::round(0.5) != 1.0 || std::atan(1.0) * 4.0 < 3.14) return 1;
     return sum == 6 ? 0 : 1;
 }
 EOF
@@ -362,7 +383,7 @@ EOF
 # harvest above, never to the host's /usr/lib (on a glibc build host the link
 # test just passed would ALSO pass with zero harvesting, via host fallback -
 # these fail loudly instead). Pure driver logic, no execution.
-for _probe in crtbeginS.o libgcc.a libc.so.6; do
+for _probe in crtbeginS.o libgcc.a libc.so.6 libm.so libz.so; do
     _resolved=$("$work/bin/clang" -print-file-name="$_probe")
     case "$_resolved" in
         "$work"/*) ;;

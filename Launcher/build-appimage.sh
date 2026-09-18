@@ -705,7 +705,8 @@ _sh_harvest_ok=1
 for _gf in "$appdir"/lib/gcc/*/*/crtbeginS.o "$appdir"/lib/gcc/*/*/libgcc.a \
            "$appdir"/lib/gcc/*/*/libgcc_s.so "$appdir"/lib/gcc/*/*/libgcc_s.so.1 \
            "$appdir"/lib/gcc/*/*/libc.so.6 "$appdir"/lib/gcc/*/*/libc.so \
-           "$appdir"/lib/gcc/*/*/crt1.o; do
+           "$appdir"/lib/gcc/*/*/libm.so "$appdir"/lib/gcc/*/*/libm.so.6 \
+           "$appdir"/lib/gcc/*/*/libz.so "$appdir"/lib/gcc/*/*/crt1.o; do
     [[ -f "$_gf" ]] || { echo "build-appimage.sh: error: toolchain harvest missing in image: $_gf" >&2; _sh_harvest_ok=0; }
 done
 [[ -f "$appdir"/toolchain/include/features.h && -f "$appdir"/toolchain/include/stdio.h ]] || {
