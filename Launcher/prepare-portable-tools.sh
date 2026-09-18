@@ -190,7 +190,10 @@ done
 # selected, so every file the link needs must be here.)
 _gcc_s_script=$(gcc -print-file-name=libgcc_s.so)
 [[ -f "$_gcc_s_script" ]] || { echo "prepare-portable-tools.sh: error: host has no libgcc_s.so" >&2; exit 1; }
-cp -a "$_gcc_s_script" "$gcc_install_dir/libgcc_s.so"
+# Dereferenced on purpose: on some targets this is a symlink (Arch x86_64: a
+# portable GROUP script, copied verbatim just the same), and what -lgcc_s
+# needs is a file named exactly libgcc_s.so with usable content.
+cp -L "$_gcc_s_script" "$gcc_install_dir/libgcc_s.so"
 _gcc_s1=$(gcc -print-file-name=libgcc_s.so.1)
 [[ -f "$_gcc_s1" ]] || { echo "prepare-portable-tools.sh: error: host has no libgcc_s.so.1" >&2; exit 1; }
 cp -L "$_gcc_s1" "$gcc_install_dir/libgcc_s.so.1"
@@ -227,7 +230,11 @@ _stdcxx_link=$(g++ -print-file-name=libstdc++.so)
 _stdcxx_real=$(readlink -f "$_stdcxx_link")
 _stdcxx_soname=$(basename "$_stdcxx_real" | sed 's/\(\.so\.[0-9][0-9]*\).*/\1/')
 cp -a "$_stdcxx_real" "$gcc_install_dir/"
-ln -sfn "$(basename "$_stdcxx_real")" "$gcc_install_dir/$_stdcxx_soname"
+# Guarded: if the distro ever ships the library literally under its soname,
+# the link below would replace the real file with a self-loop.
+if [[ "$(basename "$_stdcxx_real")" != "$_stdcxx_soname" ]]; then
+    ln -sfn "$(basename "$_stdcxx_real")" "$gcc_install_dir/$_stdcxx_soname"
+fi
 ln -sfn "$_stdcxx_soname" "$gcc_install_dir/libstdc++.so"
 # Portable libc.so link script: the distro's /usr/lib/libc.so GROUP()s
 # ABSOLUTE host paths (/usr/lib/libc.so.6 ...) which would leak the build
@@ -369,11 +376,17 @@ for _probe in crtbeginS.o libgcc.a libc.so.6; do
     esac
 done
 # Same C++ test with fully hermetic headers (-nostdinc drops every host
-# /usr/include, including musl-style ones; only the harvest + the compiler's
-# own resource dir remain). Proves the harvested include/ tree is
-# self-sufficient; link inputs stay auto-discovered as in production.
+# /usr/include, including musl-style ones, AND the driver's own auto-discovered
+# c++ dirs - so the versioned libstdc++ dirs must be spelled out explicitly,
+# mirroring the driver's own search list verbatim; a bare -isystem on include/
+# does NOT get the c++/<ver> suffix treatment and fails with 'vector' not
+# found). Only the harvest + the compiler's own resource dir remain. Proves
+# the harvested include/ tree is self-sufficient; link inputs stay
+# auto-discovered as in production. Flag set verified byte-for-byte locally.
 _resdir=$("$work/bin/clang" -print-resource-dir)
-"$work/bin/clang++" -std=c++20 -nostdinc -isystem "$work/include" -isystem "$_resdir/include" \
+"$work/bin/clang++" -std=c++20 -nostdinc \
+    -isystem "$work/include/c++/$gcc_ver" -isystem "$work/include/c++/$gcc_ver/$gcc_machine" \
+    -isystem "$work/include/c++/$gcc_ver/backward" -isystem "$work/include" -isystem "$_resdir/include" \
     -fuse-ld=lld "$test_dir/t.cpp" -o "$test_dir/t-hermetic" \
     || diag_on_failure "hermetic C++ compile+link"
 "$test_dir/t-hermetic" || diag_on_failure "hermetic test binary run"
