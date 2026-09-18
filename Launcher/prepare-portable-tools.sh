@@ -194,11 +194,16 @@ cp -a "$_gcc_s_script" "$gcc_install_dir/libgcc_s.so"
 _gcc_s1=$(gcc -print-file-name=libgcc_s.so.1)
 [[ -f "$_gcc_s1" ]] || { echo "prepare-portable-tools.sh: error: host has no libgcc_s.so.1" >&2; exit 1; }
 cp -L "$_gcc_s1" "$gcc_install_dir/libgcc_s.so.1"
-# gcc's own include dir (ssp, ISA intrinsics not in clang's resource dir...):
-# reproduces host-clang header behavior exactly, same search order as a
-# native install. Harvested whole - unlike /usr/include it is already scoped.
+# gcc's own include dir (ISA intrinsics etc. not in clang's resource dir):
+# validated here but merged into include/ AFTER the glibc harvest below, never
+# inside lib/gcc/<triple>/<ver>/ - a present <gccdir>/include hijacks clang's
+# C++ header discovery (it stops looking for the c++/<ver> tree elsewhere and
+# dies with 'vector not found'; reproduced + verified). Merge order matters:
+# gcc-include goes last so its limits.h/stdint.h wrappers win over glibc's,
+# exactly matching a native install's search order.
 [[ -d "$gcc_libdir/include" ]] || { echo "prepare-portable-tools.sh: error: host gcc has no include dir" >&2; exit 1; }
-cp -a "$gcc_libdir/include" "$gcc_install_dir/"
+[[ -n "$(ls -A "$gcc_libdir/include")" ]] || { echo "prepare-portable-tools.sh: error: host gcc include dir is empty" >&2; exit 1; }
+_gcc_includedir="$gcc_libdir/include"
 # C library startup objects + nonshared archive, from the build host's glibc.
 glibc_libdir=$(dirname "$(cc -print-file-name=crt1.o)")
 for _f in crt1.o crti.o crtn.o Scrt1.o rcrt1.o Mcrt1.o gcrt1.o libc_nonshared.a; do
@@ -249,6 +254,10 @@ rm -f "$work/.header-list"
 [[ -d "/usr/include/c++/$gcc_ver" ]] || { echo "prepare-portable-tools.sh: error: no libstdc++ headers for gcc $gcc_ver" >&2; exit 1; }
 cp -a "/usr/include/c++/$gcc_ver" "$work/include/c++/"
 [[ -f "$work/include/c++/$gcc_ver/vector" ]] || { echo "prepare-portable-tools.sh: error: libstdc++ header copy failed" >&2; exit 1; }
+# gcc's own include dir merges last (see comment above): its wrappers win,
+# matching native search order. Verified non-empty above.
+cp -a "$_gcc_includedir/." "$work/include/"
+[[ -f "$work/include/iso646.h" ]] || { echo "prepare-portable-tools.sh: error: gcc include merge failed" >&2; exit 1; }
 echo "prepare-portable-tools.sh: GCC runtime harvest done ($(du -sh "$gcc_install_dir" | cut -f1) + $(du -sh "$work/include" | cut -f1) headers)."
 
 # --- cmake, pruned from the official Kitware release ---
