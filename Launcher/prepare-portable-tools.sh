@@ -182,6 +182,23 @@ for _f in crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o libgcc.a libgcc_
     [[ -f "$gcc_libdir/$_f" ]] || { echo "prepare-portable-tools.sh: error: host gcc file missing: $gcc_libdir/$_f" >&2; exit 1; }
     cp -a "$gcc_libdir/$_f" "$gcc_install_dir/"
 done
+# libgcc_s.so is a tiny portable GROUP() script already (relative names only -
+# verified, no absolute host paths), so it copies verbatim; its target
+# libgcc_s.so.1 rides along dereferenced so -lgcc_s never reaches the host.
+# (This exact miss broke the self-test below the moment the harvest made the
+# driver prefer this install over the host's: only ONE gcc install is ever
+# selected, so every file the link needs must be here.)
+_gcc_s_script=$(gcc -print-file-name=libgcc_s.so)
+[[ -f "$_gcc_s_script" ]] || { echo "prepare-portable-tools.sh: error: host has no libgcc_s.so" >&2; exit 1; }
+cp -a "$_gcc_s_script" "$gcc_install_dir/libgcc_s.so"
+_gcc_s1=$(gcc -print-file-name=libgcc_s.so.1)
+[[ -f "$_gcc_s1" ]] || { echo "prepare-portable-tools.sh: error: host has no libgcc_s.so.1" >&2; exit 1; }
+cp -L "$_gcc_s1" "$gcc_install_dir/libgcc_s.so.1"
+# gcc's own include dir (ssp, ISA intrinsics not in clang's resource dir...):
+# reproduces host-clang header behavior exactly, same search order as a
+# native install. Harvested whole - unlike /usr/include it is already scoped.
+[[ -d "$gcc_libdir/include" ]] || { echo "prepare-portable-tools.sh: error: host gcc has no include dir" >&2; exit 1; }
+cp -a "$gcc_libdir/include" "$gcc_install_dir/"
 # C library startup objects + nonshared archive, from the build host's glibc.
 glibc_libdir=$(dirname "$(cc -print-file-name=crt1.o)")
 for _f in crt1.o crti.o crtn.o Scrt1.o rcrt1.o Mcrt1.o gcrt1.o libc_nonshared.a; do
@@ -328,7 +345,9 @@ done
 # /usr/include, including musl-style ones; only the harvest + the compiler's
 # own resource dir remain). Proves the harvested include/ tree is
 # self-sufficient; link inputs stay auto-discovered as in production.
-"$work/bin/clang++" -std=c++20 -nostdinc -isystem "$work/include" -fuse-ld=lld "$test_dir/t.cpp" -o "$test_dir/t-hermetic"
+_resdir=$("$work/bin/clang" -print-resource-dir)
+"$work/bin/clang++" -std=c++20 -nostdinc -isystem "$work/include" -isystem "$_resdir/include" \
+    -fuse-ld=lld "$test_dir/t.cpp" -o "$test_dir/t-hermetic"
 "$test_dir/t-hermetic"
 
 rm -rf "$test_dir"

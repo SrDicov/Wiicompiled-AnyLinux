@@ -605,6 +605,7 @@ cp "$appimage_dir/00-wiicompiled-workspace.hook" "$appdir/bin/00-wiicompiled-wor
 # on glibc distros by accident, fatal on musl - so fail the image instead.
 _sh_harvest_ok=1
 for _gf in "$appdir"/lib/gcc/*/*/crtbeginS.o "$appdir"/lib/gcc/*/*/libgcc.a \
+           "$appdir"/lib/gcc/*/*/libgcc_s.so "$appdir"/lib/gcc/*/*/libgcc_s.so.1 \
            "$appdir"/lib/gcc/*/*/libc.so.6 "$appdir"/lib/gcc/*/*/libc.so \
            "$appdir"/lib/gcc/*/*/crt1.o; do
     [[ -f "$_gf" ]] || { echo "build-appimage.sh: error: toolchain harvest missing in image: $_gf" >&2; _sh_harvest_ok=0; }
