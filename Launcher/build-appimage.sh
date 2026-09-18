@@ -646,15 +646,26 @@ fi
 [ -n "$_bd" ] || { echo "bash wrapper: cannot locate bash (empty PATH?)" >&2; exit 127; }
 _appdir=$(cd "$_bd/.." 2>/dev/null && pwd) || { echo "bash wrapper: cannot resolve image dir from $_bd" >&2; exit 127; }
 [ -x "$_appdir/lib/@LDNAME@" ] || { echo "bash wrapper: no loader at $_appdir/lib/@LDNAME@" >&2; exit 127; }
-[ -f "$_appdir/shared/bin/bash" ] || { echo "bash wrapper: no real bash at $_appdir/shared/bin/bash" >&2; exit 127; }
-exec "$_appdir/lib/@LDNAME@" --library-path "$_appdir/lib" "$_appdir/shared/bin/bash" "$@"
+[ -f "$_appdir/shared/bin/@BASHREAL@" ] || { echo "bash wrapper: no real bash at $_appdir/shared/bin/@BASHREAL@" >&2; exit 127; }
+exec "$_appdir/lib/@LDNAME@" --library-path "$_appdir/lib" "$_appdir/shared/bin/@BASHREAL@" "$@"
 WRAPPER_EOF
-sed -i "s/@LDNAME@/$_ld_name/g" "$appdir/bin/.bash.wrapper"
+sed -i "s/@LDNAME@/$_ld_name/g; s/@BASHREAL@/bash.real/g" "$appdir/bin/.bash.wrapper"
 rm -f "$appdir/bin/bash"
 mv "$appdir/bin/.bash.wrapper" "$appdir/bin/bash"
 chmod +x "$appdir/bin/bash"
+# .NET's Process.Start resolves a bare name WITHOUT using PATH first: it
+# checks the executable's own directory ($APPDIR/shared/bin, from
+# /proc/self/exe through the loader) BEFORE cwd and PATH - so a real
+# shared/bin/bash would shadow bin/bash and get kernel-exec'd DIRECTLY
+# (fatal on musl; strace-proven on Void). Renaming it out of the way makes
+# that lookup miss and fall through to bin/bash (this wrapper). RULE, going
+# forward: never ship a script-interpreter basename under shared/bin/.
+mv "$appdir/shared/bin/bash" "$appdir/shared/bin/bash.real"
 # Gates: must be a detached script (link count 1, not ELF), must boot the
 # real bash, and must run a script FILE arg (the exact musl-killer shape).
+# Plus the .NET-exe-dir trap: no executable may be named exactly `bash`
+# under shared/bin/ or .NET resolves it before PATH and kernel-execs it
+# directly (strace-proven Void killer).
 [[ "$(stat -c %h "$appdir/bin/bash")" -eq 1 ]] || {
     echo "build-appimage.sh: error: bin/bash still hardlinked" >&2; exit 1; }
 [[ "$(head -c 4 "$appdir/bin/bash")" != $'\x7fELF' ]] || {
@@ -669,6 +680,10 @@ _bash_probe=$("$appdir/bin/bash" "$TMPDIR/wrap-probe.sh" 2>&1) || {
 [[ "$_bash_probe" == "WRAPPER_SCRIPT_ARG_OK" ]] || {
     echo "build-appimage.sh: error: wrapped bash script-arg probe printed: $_bash_probe" >&2; exit 1; }
 rm -f "$TMPDIR/wrap-probe.sh"
+[[ -e "$appdir/shared/bin/bash" ]] && {
+    echo "build-appimage.sh: error: $appdir/shared/bin/bash exists (.NET exe-dir resolution would kernel-exec it directly)" >&2; exit 1; }
+[[ -f "$appdir/shared/bin/bash.real" ]] || {
+    echo "build-appimage.sh: error: wrapper target missing: $appdir/shared/bin/bash.real" >&2; exit 1; }
 echo "bin/bash wrapped and verified."
 
 # Second half of the static gate above: the file must be in the AppDir that
