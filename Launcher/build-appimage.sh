@@ -603,7 +603,7 @@ _reinterp_count=0
 while IFS= read -r _bin; do
     _cur=$(patchelf --print-interpreter "$_bin" 2>/dev/null || true)
     case "$_cur" in
-        /lib/*)
+        /lib/*|/lib32/*|/lib64/*)
             patchelf --set-interpreter "$_target_interp" "$_bin" || {
                 echo "build-appimage.sh: error: patchelf failed on $_bin" >&2; exit 1; }
             _reinterp_count=$((_reinterp_count + 1)) ;;
