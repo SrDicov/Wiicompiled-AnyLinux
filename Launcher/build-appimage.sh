@@ -557,6 +557,19 @@ if [[ -d "$toolchain_dir/lib/gcc" ]]; then
     rm -rf "$appdir/toolchain/lib/gcc"
     ln -sfn ../../lib/gcc "$appdir/toolchain/lib/gcc"
 fi
+# Auto-discoverable C++ headers: clang derives its C++ search from the driver
+# dir ($APPDIR/bin/../include/c++/<ver>), but the harvest stages headers under
+# toolchain/include/ (for the stable $CACHE-symlink -isystem production
+# uses). Without this link the driver finds NO c++ tree in-image and -
+# critically - never falls back to a suffixed host one either: EVERY compile
+# fails with 'vector' not found, on glibc hosts too (proven locally in both
+# directions). Deliberately ONLY c++: bare C headers stay reachable solely
+# via production's -isystem, so an -isystem-less compile can never mix glibc
+# headers with a foreign libc at link time.
+if [[ -d "$appdir/toolchain/include/c++" ]]; then
+    mkdir -p "$appdir/include"
+    ln -sfn ../toolchain/include/c++ "$appdir/include/c++"
+fi
 if [[ -d "$toolchain_dir/share" ]]; then
     mkdir -p "$appdir/share"
     cp -a "$toolchain_dir/share/." "$appdir/share/"
@@ -615,6 +628,11 @@ done
 _sh_cxx_vec=( "$appdir"/toolchain/include/c++/*/vector )
 [[ -f "${_sh_cxx_vec[0]}" ]] || {
     echo "build-appimage.sh: error: libstdc++ headers missing in image (toolchain/include/c++)" >&2; _sh_harvest_ok=0; }
+# Load-bearing for driver auto-discovery ($APPDIR/bin/../include/c++/<ver>):
+# without it EVERY compile fails with 'vector' not found (no suffixed host
+# fallback exists), on glibc hosts too. Proven locally in both directions.
+[[ -L "$appdir/include/c++" ]] || {
+    echo "build-appimage.sh: error: auto-discovery c++ symlink missing ($appdir/include/c++)" >&2; _sh_harvest_ok=0; }
 [[ "$_sh_harvest_ok" -ne 0 ]] || exit 1
 
 # Offline game-packaging payloads: quick-sharun just downloaded exactly these
@@ -731,7 +749,11 @@ int main() {
     return sum == 6 ? 0 : 1;
 }
 EOF
-"$smoke/cache/toolchain/bin/clang++" -std=c++20 -fuse-ld=lld "$smoke/t.cpp" -o "$smoke/t"
+# -isystem mirrors production exactly (local-build.sh derives the same flag
+# from --cc for every compile including try-compiles): the smoke test must
+# exercise the production flag set, not a subset.
+"$smoke/cache/toolchain/bin/clang++" -std=c++20 -isystem "$smoke/cache/toolchain/include" \
+    -fuse-ld=lld "$smoke/t.cpp" -o "$smoke/t"
 "$smoke/t"
 cat > "$smoke/CMakeLists.txt" <<'EOF'
 cmake_minimum_required(VERSION 3.16)
@@ -740,7 +762,8 @@ add_executable(smoke t.cpp)
 EOF
 "$smoke/cache/toolchain/bin/cmake" -S "$smoke" -B "$smoke/build" -G Ninja \
     -DCMAKE_MAKE_PROGRAM="$smoke/cache/toolchain/bin/ninja" \
-    -DCMAKE_CXX_COMPILER="$smoke/cache/toolchain/bin/clang++" >/dev/null
+    -DCMAKE_CXX_COMPILER="$smoke/cache/toolchain/bin/clang++" \
+    -DCMAKE_CXX_FLAGS="-isystem $smoke/cache/toolchain/include" >/dev/null
 "$smoke/cache/toolchain/bin/cmake" --build "$smoke/build" >/dev/null
 "$smoke/build/smoke"
 
