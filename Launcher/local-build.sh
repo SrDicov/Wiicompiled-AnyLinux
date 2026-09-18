@@ -416,12 +416,33 @@ configure_args=(-S "$workspace/runtime" -B "$build" -G Ninja
 # each subsequent run's differing command line then made Ninja rebuild every object from scratch
 # even though nothing had actually changed. Deriving these from $cc_bin (itself already stable)
 # and re-passing them explicitly every configure keeps them pinned to the same stable value too.
+# Bundled C library + libstdc++ headers (musl-host fix): the setup image's
+# toolchain ships its own glibc/libstdc++ headers under toolchain/include/
+# (staged by build-appimage.sh); the host /usr/include otherwise wins, and
+# musl headers fail the build with __GLIBC_PREREQ errors (verified on Void).
+# Derived from --cc exactly like $toolchain_bin above, and kept in the
+# $CACHE-symlink form (plain textual ../include, never cd/pwd-resolved) so the
+# baked path stays stable across AppImage runs. Passed via -isystem (not -I):
+# these are system headers, warnings off. Bare --cc (plain-checkout host
+# toolchain) yields no slash and keeps today's behavior untouched.
+toolchain_cflags=()
 if [[ "$cc_bin" == */* ]]; then
     toolchain_bin=$(dirname "$cc_bin")
+    _toolchain_include="$toolchain_bin/../include"
+    if [[ -f "$_toolchain_include/features.h" ]]; then
+        toolchain_cflags=(-isystem "$_toolchain_include")
+    fi
     [[ -x "$toolchain_bin/llvm-ar" ]] && configure_args+=(-DCMAKE_AR="$toolchain_bin/llvm-ar" -DCMAKE_ASM_COMPILER_AR="$toolchain_bin/llvm-ar" -DCMAKE_C_COMPILER_AR="$toolchain_bin/llvm-ar" -DCMAKE_CXX_COMPILER_AR="$toolchain_bin/llvm-ar")
     [[ -x "$toolchain_bin/llvm-ranlib" ]] && configure_args+=(-DCMAKE_RANLIB="$toolchain_bin/llvm-ranlib" -DCMAKE_ASM_COMPILER_RANLIB="$toolchain_bin/llvm-ranlib" -DCMAKE_C_COMPILER_RANLIB="$toolchain_bin/llvm-ranlib" -DCMAKE_CXX_COMPILER_RANLIB="$toolchain_bin/llvm-ranlib")
     [[ -x "$toolchain_bin/ld.lld" ]] && configure_args+=(-DCMAKE_LINKER="$toolchain_bin/ld.lld")
     configure_args+=(-DCMAKE_ASM_COMPILER="$cc_bin")
+fi
+# Hermetic headers into every compile INCLUDING cmake's own try-compiles
+# (CMAKE_<LANG>_FLAGS apply to those too - that is what un-breaks compiler
+# detection on musl hosts, where the try-compile otherwise picks musl headers
+# and dies before building a single object).
+if (( ${#toolchain_cflags[@]} )); then
+    configure_args+=(-DCMAKE_C_FLAGS="${toolchain_cflags[*]}" -DCMAKE_CXX_FLAGS="${toolchain_cflags[*]}")
 fi
 if [[ -n "$fuse_ld_override" ]]; then
     configure_args+=(-DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$fuse_ld_override")

@@ -546,6 +546,17 @@ if [[ -d "$toolchain_dir/lib/clang" ]]; then
     rm -rf "$appdir/toolchain/lib/clang"
     ln -sfn ../../lib/clang "$appdir/toolchain/lib/clang"
 fi
+# Same-relative rule for the GCC runtime harvest (crt*.o, libgcc, libc.so.6,
+# portable libc.so, libstdc++.so): clang's GCC-install scan looks beside the
+# resolved exe dir ($APPDIR/bin), i.e. $APPDIR/lib/gcc/<triple>/<ver>/ - found
+# with zero extra flags (verified on musl/Void). The toolchain/ symlink keeps
+# the other view working, mirroring lib/clang above.
+if [[ -d "$toolchain_dir/lib/gcc" ]]; then
+    mkdir -p "$appdir/lib"
+    cp -a "$toolchain_dir/lib/gcc" "$appdir/lib/gcc"
+    rm -rf "$appdir/toolchain/lib/gcc"
+    ln -sfn ../../lib/gcc "$appdir/toolchain/lib/gcc"
+fi
 if [[ -d "$toolchain_dir/share" ]]; then
     mkdir -p "$appdir/share"
     cp -a "$toolchain_dir/share/." "$appdir/share/"
@@ -580,38 +591,30 @@ cp "$appimage_dir/00-wiicompiled-workspace.hook" "$appdir/bin/00-wiicompiled-wor
 [[ -f "$appdir/workspace/Launcher/package-game-appimage.sh" ]] || {
     echo "build-appimage.sh: error: game packager missing from AppDir" >&2; exit 1; }
 
-# gcompat-host fix: every bundled dynamic executable keeps PT_INTERP pointing
-# at the host path (/lib64/ld-linux-...). That is correct on glibc hosts but
-# fatal where the path is a musl gcompat stub (Void installs gcompat, whose
-# 1.1.0 loader cannot satisfy modern glibc symbols like __isoc23_* or
-# arc4random): any directly-exec'd helper (bash/cmake/ninja/clang/patchelf/...)
-# dies with "Error relocating ... symbol not found". The main binary never hit
-# this because sharun launches it through the bundled loader explicitly - only
-# the local-build.sh subtree (kernel execs via shebang/PATH) does.
-# Fix: point all bundled executables at the same /tmp/.ld-sharun.so.NN loader
-# our dotnet single-file main binary already uses. sharun materializes that
-# file at every launch (verified: present after --version), so this reuses
-# quick-sharun's own proven mechanism with zero extra runtime work. The exact
-# name is read off the main binary (set by quick-sharun), never hardcoded.
-command -v patchelf >/dev/null || {
-    echo "build-appimage.sh: error: patchelf is required for the INTERP fix" >&2; exit 1; }
-_target_interp=$(patchelf --print-interpreter "$appdir/shared/bin/${MAIN_BIN:?}" 2>/dev/null || true)
-[[ "$_target_interp" == /tmp/.ld-sharun.so.* ]] || {
-    echo "build-appimage.sh: error: cannot derive sharun loader path from $MAIN_BIN (got '$_target_interp')" >&2; exit 1; }
-echo "Re-pointing bundled executables at $_target_interp (gcompat-host fix)..."
-_reinterp_count=0
-while IFS= read -r _bin; do
-    _cur=$(patchelf --print-interpreter "$_bin" 2>/dev/null || true)
-    case "$_cur" in
-        /lib/*|/lib32/*|/lib64/*)
-            patchelf --set-interpreter "$_target_interp" "$_bin" || {
-                echo "build-appimage.sh: error: patchelf failed on $_bin" >&2; exit 1; }
-            _reinterp_count=$((_reinterp_count + 1)) ;;
-    esac
-done < <(find "$appdir" -type f -perm -111 -print)
-echo "Re-pointed $_reinterp_count executables at $_target_interp."
-[[ "$_reinterp_count" -gt 0 ]] || {
-    echo "build-appimage.sh: error: INTERP fix applied to zero binaries (layout changed?)" >&2; exit 1; }
+# NOTE (reverted experiment, kept as a warning): re-pointing every bundled
+# executable's PT_INTERP at /tmp/.ld-sharun.so.NN was tried for musl hosts
+# whose /lib64/ld-linux is a gcompat stub - and reverted. It fixes directly-
+# exec'd helpers but changes how sharun dispatches them (verified: cmake then
+# resolves its prefix to shared/ instead of $APPDIR and loses its Modules).
+# The toolchain path stays dispatch-safe as shipped; musl hosts are served by
+# the hermetic GCC runtime + headers below instead.
+# Static gate for the hermetic toolchain (musl/Void fix, verified file by
+# file on real musl): clang's GCC-install scan auto-discovers lib/gcc/ beside
+# bin/, while include/ is consumed via -isystem from --cc (local-build.sh).
+# A missing file here would silently fall back to the HOST's files - correct
+# on glibc distros by accident, fatal on musl - so fail the image instead.
+_sh_harvest_ok=1
+for _gf in "$appdir"/lib/gcc/*/*/crtbeginS.o "$appdir"/lib/gcc/*/*/libgcc.a \
+           "$appdir"/lib/gcc/*/*/libc.so.6 "$appdir"/lib/gcc/*/*/libc.so \
+           "$appdir"/lib/gcc/*/*/crt1.o; do
+    [[ -f "$_gf" ]] || { echo "build-appimage.sh: error: toolchain harvest missing in image: $_gf" >&2; _sh_harvest_ok=0; }
+done
+[[ -f "$appdir"/toolchain/include/features.h && -f "$appdir"/toolchain/include/stdio.h ]] || {
+    echo "build-appimage.sh: error: toolchain headers missing in image (toolchain/include)" >&2; _sh_harvest_ok=0; }
+_sh_cxx_vec=( "$appdir"/toolchain/include/c++/*/vector )
+[[ -f "${_sh_cxx_vec[0]}" ]] || {
+    echo "build-appimage.sh: error: libstdc++ headers missing in image (toolchain/include/c++)" >&2; _sh_harvest_ok=0; }
+[[ "$_sh_harvest_ok" -ne 0 ]] || exit 1
 
 # Offline game-packaging payloads: quick-sharun just downloaded exactly these
 # files (hash-verified against its own pins) to stage THIS image, so copy the

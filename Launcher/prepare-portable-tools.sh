@@ -154,6 +154,86 @@ cp -a "$src/lib/$target_triple"/libc++.so* "$src/lib/$target_triple"/libc++abi.s
 
 rm -rf "$extract_root"
 
+# --- GCC runtime + C library startup files and headers (the musl/Void fix) ---
+# clang locates libgcc/crt*.o through its GCC-installation scan, which looks
+# relative to the driver (build-appimage.sh stages these at lib/gcc/<triple>/
+# <ver>/ beside bin/, so zero extra flags are needed). The LLVM tarball does
+# not ship them and dependency walks never see them (linker inputs, never
+# DT_NEEDED), so without this the toolchain silently consumes the HOST's
+# files: correct on glibc distros by accident ("cannot open crtbeginS.o" plus
+# musl-flavored crt1.o/libstdc++ anywhere else). Harvested from the build
+# host's own gcc+glibc - the same versions everything else in the image is
+# built against - so links are hermetic. Verified file-by-file on a real
+# musl/Void machine (crt discovery, C + C++ try-compile, linked, ran).
+# The C library + libstdc++ HEADERS ride along under include/ (consumed via
+# an explicit -isystem derived from --cc in local-build.sh: the host
+# /usr/include otherwise wins, and musl headers fail with __GLIBC_PREREQ
+# errors). Everything mirrors gcc's own layout, so no -B/--sysroot is needed.
+echo "prepare-portable-tools.sh: harvesting GCC runtime + C library files..."
+command -v gcc >/dev/null || { echo "prepare-portable-tools.sh: error: host gcc is required for the runtime harvest" >&2; exit 1; }
+command -v pacman >/dev/null || { echo "prepare-portable-tools.sh: error: pacman is required for the header harvest (Arch build host)" >&2; exit 1; }
+gcc_machine=$(gcc -dumpmachine)
+gcc_ver=$(gcc -dumpversion)
+gcc_libdir=$(dirname "$(gcc -print-file-name=crtbeginS.o)")
+[[ -f "$gcc_libdir/crtbeginS.o" ]] || { echo "prepare-portable-tools.sh: error: host gcc has no crtbeginS.o ($gcc_libdir)" >&2; exit 1; }
+gcc_install_dir="$work/lib/gcc/$gcc_machine/$gcc_ver"
+mkdir -p "$gcc_install_dir"
+for _f in crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o libgcc.a libgcc_eh.a libgcov.a; do
+    [[ -f "$gcc_libdir/$_f" ]] || { echo "prepare-portable-tools.sh: error: host gcc file missing: $gcc_libdir/$_f" >&2; exit 1; }
+    cp -a "$gcc_libdir/$_f" "$gcc_install_dir/"
+done
+# C library startup objects + nonshared archive, from the build host's glibc.
+glibc_libdir=$(dirname "$(cc -print-file-name=crt1.o)")
+for _f in crt1.o crti.o crtn.o Scrt1.o rcrt1.o Mcrt1.o gcrt1.o libc_nonshared.a; do
+    [[ -f "$glibc_libdir/$_f" ]] || { echo "prepare-portable-tools.sh: error: host glibc file missing: $glibc_libdir/$_f" >&2; exit 1; }
+    cp -a "$glibc_libdir/$_f" "$gcc_install_dir/"
+done
+# libc.so.6 + the dynamic loader: byte-identical to what quick-sharun deploys
+# into the image's lib/ - these copies only give the LINKER a first-hit
+# search dir (DwarFS dedups identical content, so they cost ~nothing).
+_ld_name=$(basename "$(ls /usr/lib/ld-linux* /lib/ld-linux* /lib64/ld-linux* 2>/dev/null | head -1)")
+[[ -n "$_ld_name" ]] || { echo "prepare-portable-tools.sh: error: no ld-linux on the build host" >&2; exit 1; }
+for _f in libc.so.6 "$_ld_name"; do
+    _src=$(cc -print-file-name="$_f")
+    [[ -f "$_src" ]] || { echo "prepare-portable-tools.sh: error: host file missing for $_f" >&2; exit 1; }
+    cp -L "$_src" "$gcc_install_dir/"
+done
+# libstdc++.so.6 (derefenced copy + soname/dev symlinks, same layout as any
+# gcc install - the loose .so keeps -lstdc++ off the host's files).
+_stdcxx_link=$(g++ -print-file-name=libstdc++.so)
+[[ -e "$_stdcxx_link" ]] || { echo "prepare-portable-tools.sh: error: host has no libstdc++.so" >&2; exit 1; }
+_stdcxx_real=$(readlink -f "$_stdcxx_link")
+_stdcxx_soname=$(basename "$_stdcxx_real" | sed 's/\(\.so\.[0-9][0-9]*\).*/\1/')
+cp -a "$_stdcxx_real" "$gcc_install_dir/"
+ln -sfn "$(basename "$_stdcxx_real")" "$gcc_install_dir/$_stdcxx_soname"
+ln -sfn "$_stdcxx_soname" "$gcc_install_dir/libstdc++.so"
+# Portable libc.so link script: the distro's /usr/lib/libc.so GROUP()s
+# ABSOLUTE host paths (/usr/lib/libc.so.6 ...) which would leak the build
+# host (or worse, a musl host's files) into every link. These bare names
+# resolve through the same search dirs that found this script.
+case "$arch" in
+    x86_64) _elf_fmt=elf64-x86-64;;
+    aarch64) _elf_fmt=elf64-littleaarch64;;
+esac
+printf '/* Portable libc link script (no absolute host paths; resolved via library search dirs) */\nOUTPUT_FORMAT(%s)\nGROUP ( libc.so.6 libc_nonshared.a AS_NEEDED ( %s ) )\n' \
+    "$_elf_fmt" "$_ld_name" > "$gcc_install_dir/libc.so"
+# Headers: exact file lists from the Arch glibc + kernel-header packages
+# (never a blind /usr/include copy - that would drag in LLVM/host-only
+# headers). Merges under include/ beside the libc++ tree above (c++/v1/
+# libc++ vs c++/<ver>/ libstdc++ share the parent without colliding).
+pacman -Ql glibc linux-api-headers 2>/dev/null | awk '{print $2}' | grep '^/usr/include/' > "$work/.header-list" || {
+    echo "prepare-portable-tools.sh: error: cannot list glibc/linux-api-headers files" >&2; exit 1; }
+[[ -s "$work/.header-list" ]] || { echo "prepare-portable-tools.sh: error: empty glibc header list" >&2; exit 1; }
+tar -cf - -C / --no-recursion --files-from="$work/.header-list" 2>/dev/null | tar -xf - -C "$work/include" --strip-components=2
+rm -f "$work/.header-list"
+[[ -f "$work/include/features.h" && -f "$work/include/stdio.h" && -f "$work/include/sys/cdefs.h" ]] || {
+    echo "prepare-portable-tools.sh: error: glibc header harvest looks wrong (no features.h/stdio.h)" >&2; exit 1; }
+# libstdc++ headers (version dir matches gcc -dumpversion on Arch).
+[[ -d "/usr/include/c++/$gcc_ver" ]] || { echo "prepare-portable-tools.sh: error: no libstdc++ headers for gcc $gcc_ver" >&2; exit 1; }
+cp -a "/usr/include/c++/$gcc_ver" "$work/include/c++/"
+[[ -f "$work/include/c++/$gcc_ver/vector" ]] || { echo "prepare-portable-tools.sh: error: libstdc++ header copy failed" >&2; exit 1; }
+echo "prepare-portable-tools.sh: GCC runtime harvest done ($(du -sh "$gcc_install_dir" | cut -f1) + $(du -sh "$work/include" | cut -f1) headers)."
+
 # --- cmake, pruned from the official Kitware release ---
 
 cmake_share_version=${cmake_version%.*}
@@ -233,6 +313,23 @@ EOF
     -DCMAKE_MAKE_PROGRAM="$work/bin/ninja" -DCMAKE_CXX_COMPILER="$work/bin/clang++" >/dev/null
 "$work/bin/cmake" --build "$test_dir/build" >/dev/null
 "$test_dir/build/test"
+# Hermeticity assertions: the driver must resolve startup files + libc to the
+# harvest above, never to the host's /usr/lib (on a glibc build host the link
+# test just passed would ALSO pass with zero harvesting, via host fallback -
+# these fail loudly instead). Pure driver logic, no execution.
+for _probe in crtbeginS.o libgcc.a libc.so.6; do
+    _resolved=$("$work/bin/clang" -print-file-name="$_probe")
+    case "$_resolved" in
+        "$work"/*) ;;
+        *) echo "prepare-portable-tools.sh: error: clang resolves $_probe to the host ($_resolved), harvest broken" >&2; exit 1;;
+    esac
+done
+# Same C++ test with fully hermetic headers (-nostdinc drops every host
+# /usr/include, including musl-style ones; only the harvest + the compiler's
+# own resource dir remain). Proves the harvested include/ tree is
+# self-sufficient; link inputs stay auto-discovered as in production.
+"$work/bin/clang++" -std=c++20 -nostdinc -isystem "$work/include" -fuse-ld=lld "$test_dir/t.cpp" -o "$test_dir/t-hermetic"
+"$test_dir/t-hermetic"
 
 rm -rf "$test_dir"
 trap - EXIT
