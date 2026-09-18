@@ -312,6 +312,17 @@ Ninja $ninja_version
 EOF
 
 echo "prepare-portable-tools.sh: testing the toolchain..."
+echo "prepare-portable-tools.sh: build-host gcc: $(gcc -dumpversion) $(gcc -dumpmachine)"
+echo "prepare-portable-tools.sh: clang resolves crtbeginS.o to: $("$work/bin/clang" -print-file-name=crtbeginS.o)"
+echo "prepare-portable-tools.sh: clang resolves libc.so.6 to: $("$work/bin/clang" -print-file-name=libc.so.6)"
+diag_on_failure() {
+    # $1 = what failed. Dumps driver discovery state so a header/link miss is
+    # debuggable from the log alone (no second CI cycle for forensics).
+    echo "prepare-portable-tools.sh: DIAGNOSTICS after failure: $1" >&2
+    "$work/bin/clang++" -std=c++20 -E -v -x c++ /dev/null -o /dev/null 2>&1 | tail -25 >&2 || true
+    ls "$work/lib/gcc" "$work/include/c++" >&2 || true
+    exit 1
+}
 test_dir=$(mktemp -d)
 trap 'rm -rf "$test_dir"' EXIT
 cat > "$test_dir/t.cpp" <<'EOF'
@@ -324,8 +335,13 @@ int main() {
     return sum == 6 ? 0 : 1;
 }
 EOF
-"$work/bin/clang++" -std=c++20 -fuse-ld=lld "$test_dir/t.cpp" -o "$test_dir/t"
-"$test_dir/t"
+# NOTE: -isystem mirrors production exactly (local-build.sh derives the same
+# flag from --cc for every compile including cmake try-compiles). It is not a
+# crutch for broken auto-discovery - the print-file-name assertions below
+# guard that separately and loudly.
+"$work/bin/clang++" -std=c++20 -isystem "$work/include" -fuse-ld=lld "$test_dir/t.cpp" -o "$test_dir/t" \
+    || diag_on_failure "plain C++ compile+link"
+"$test_dir/t" || diag_on_failure "plain test binary run"
 
 # Also exercised together through CMake+Ninja, exactly how local-build.sh drives them - a plain
 # clang++ invocation above would not catch a broken CMAKE_ROOT (Modules/Templates) or a Ninja that
@@ -336,9 +352,11 @@ project(test CXX)
 add_executable(test t.cpp)
 EOF
 "$work/bin/cmake" -S "$test_dir" -B "$test_dir/build" -G Ninja \
-    -DCMAKE_MAKE_PROGRAM="$work/bin/ninja" -DCMAKE_CXX_COMPILER="$work/bin/clang++" >/dev/null
-"$work/bin/cmake" --build "$test_dir/build" >/dev/null
-"$test_dir/build/test"
+    -DCMAKE_MAKE_PROGRAM="$work/bin/ninja" -DCMAKE_CXX_COMPILER="$work/bin/clang++" \
+    -DCMAKE_C_FLAGS="-isystem $work/include" -DCMAKE_CXX_FLAGS="-isystem $work/include" >/dev/null \
+    || diag_on_failure "cmake configure"
+"$work/bin/cmake" --build "$test_dir/build" >/dev/null || diag_on_failure "cmake build"
+"$test_dir/build/test" || diag_on_failure "cmake test binary run"
 # Hermeticity assertions: the driver must resolve startup files + libc to the
 # harvest above, never to the host's /usr/lib (on a glibc build host the link
 # test just passed would ALSO pass with zero harvesting, via host fallback -
@@ -347,7 +365,7 @@ for _probe in crtbeginS.o libgcc.a libc.so.6; do
     _resolved=$("$work/bin/clang" -print-file-name="$_probe")
     case "$_resolved" in
         "$work"/*) ;;
-        *) echo "prepare-portable-tools.sh: error: clang resolves $_probe to the host ($_resolved), harvest broken" >&2; exit 1;;
+        *) diag_on_failure "clang resolves $_probe to the host ($_resolved), harvest broken";;
     esac
 done
 # Same C++ test with fully hermetic headers (-nostdinc drops every host
@@ -356,8 +374,9 @@ done
 # self-sufficient; link inputs stay auto-discovered as in production.
 _resdir=$("$work/bin/clang" -print-resource-dir)
 "$work/bin/clang++" -std=c++20 -nostdinc -isystem "$work/include" -isystem "$_resdir/include" \
-    -fuse-ld=lld "$test_dir/t.cpp" -o "$test_dir/t-hermetic"
-"$test_dir/t-hermetic"
+    -fuse-ld=lld "$test_dir/t.cpp" -o "$test_dir/t-hermetic" \
+    || diag_on_failure "hermetic C++ compile+link"
+"$test_dir/t-hermetic" || diag_on_failure "hermetic test binary run"
 
 rm -rf "$test_dir"
 trap - EXIT
