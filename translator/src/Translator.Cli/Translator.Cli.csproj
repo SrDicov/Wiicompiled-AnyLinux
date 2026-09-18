@@ -11,6 +11,11 @@
     <VersionPrefix>0.5.0</VersionPrefix>
     <Company>WiiCompiled</Company>
     <Product>Mario Kart Wii Static Translator</Product>
+    <!-- No ICU anywhere in the image (pruned): the translator is culture-safe
+         by design (Program.cs pins InvariantCulture explicitly; no
+         culture-sensitive APIs anywhere), so bake invariant mode in like the
+         setup does - verified live on musl/Void via the equivalent env var. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>
